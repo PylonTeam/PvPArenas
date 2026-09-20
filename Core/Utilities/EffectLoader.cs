@@ -8,7 +8,7 @@ namespace PvPArenas.Core.Utilities;
 public class EffectLoader : ModSystem
 {
     private const string LiquidGlassPath = "Arenas/Assets/Effects/LiquidGlass";
-    private const string SpawnBoxBorderPath = "Arenas/Assets/Effects/SpawnBoxBorder";
+    private const string SpawnBoxBorderPath = "PvPArenas/Assets/Effects/SpawnBoxBorder";
 
     private static Effect liquidGlassEffect;
     private static Effect spawnBoxBorderEffect;

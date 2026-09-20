@@ -11,11 +11,15 @@
 
 	<!-- References -->
 	<ItemGroup>
+		<ProjectReference Include="..\ErkySSC\ErkySSC.csproj" />
 		<ProjectReference Include="..\PvPFramework\PvPFramework.csproj" />
 		<ProjectReference Include="..\Pylon\Pylon.csproj" />
 
 	</ItemGroup>
 
+	<ItemGroup>
+		<Compile Remove="Tests/**/*.cs" />
+	</ItemGroup>
 	<!-- Makes use of Krafs Publicizer when compiling tModLoader.dll, making all access modifiers public -->
 	<ItemGroup>
 		<PackageReference Include="Krafs.Publicizer" PrivateAssets="true" Version="2.2.1" />

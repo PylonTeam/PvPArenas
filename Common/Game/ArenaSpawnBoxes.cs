@@ -125,7 +125,7 @@ internal sealed class ArenaSpawnBoxWorld : ModSystem
             if (inner.Width <= 0 || inner.Height <= 0 || thickness <= 0)
                 return;
 
-            if (PvPFramework.Core.Utilities.EffectLoader.TryGetSpawnBoxBorderEffect(out Effect effect))
+            if (global::PvPArenas.Core.Utilities.EffectLoader.TryGetSpawnBoxBorderEffect(out Effect effect))
                 DrawShaderBorder(spriteBatch, inner, thickness, effect, color, opacity);
             else
                 DrawPixelBorder(spriteBatch, inner, thickness, color * opacity);

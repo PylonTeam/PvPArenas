@@ -416,6 +416,7 @@ internal sealed class RoundManager : ModSystem
         currentPhase = newPhase;
         remainingTicks = Math.Max(0, durationTicks);
         timerPaused = false;
+        ArenaSpawnBoxIntegration.UpdateMatchState();
 
         int players = Main.player.Count(player => player?.active == true);
         Log.Info($"[M2-Phase] {oldPhase} -> {newPhase}; ticks={remainingTicks}, preset={selectedPresetIndex}, players={players}.");
