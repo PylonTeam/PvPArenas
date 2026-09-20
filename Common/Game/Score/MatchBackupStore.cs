@@ -2,7 +2,7 @@ using System;
 using System.IO;
 using System.Text;
 using System.Text.Json;
-using MatchPayload = PvPHub.Common.MainMenu.API.MatchHistory.MatchApi.MatchPayload;
+using MatchPayload = Pylon.Common.MainMenu.API.MatchHistory.MatchApi.MatchPayload;
 
 namespace PvPArenas.Common.Game.Score;
 

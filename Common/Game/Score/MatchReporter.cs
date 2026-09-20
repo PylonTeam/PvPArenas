@@ -1,18 +1,18 @@
 using PvPFramework.Common.EndScreen;
-using PvPHub.Common.Authentication;
-using PvPHub.Common.MainMenu.API;
-using PvPHub.Common.MainMenu.API.MatchHistory;
-using PvPHub.Common.MainMenu.API.Profile;
+using Pylon.Common.Authentication;
+using Pylon.Common.MainMenu.API;
+using Pylon.Common.MainMenu.API.MatchHistory;
+using Pylon.Common.MainMenu.API.Profile;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Terraria.Enums;
 using Terraria.ID;
-using CompletedMatchPayload = PvPHub.Common.MainMenu.API.MatchHistory.MatchApi.CompletedMatchPayload;
-using MatchPayload = PvPHub.Common.MainMenu.API.MatchHistory.MatchApi.MatchPayload;
-using MatchPlayerPayload = PvPHub.Common.MainMenu.API.MatchHistory.MatchApi.MatchPlayerPayload;
-using MatchTeamPayload = PvPHub.Common.MainMenu.API.MatchHistory.MatchApi.MatchTeamPayload;
+using CompletedMatchPayload = Pylon.Common.MainMenu.API.MatchHistory.MatchApi.CompletedMatchPayload;
+using MatchPayload = Pylon.Common.MainMenu.API.MatchHistory.MatchApi.MatchPayload;
+using MatchPlayerPayload = Pylon.Common.MainMenu.API.MatchHistory.MatchApi.MatchPlayerPayload;
+using MatchTeamPayload = Pylon.Common.MainMenu.API.MatchHistory.MatchApi.MatchTeamPayload;
 
 namespace PvPArenas.Common.Game.Score;
 
@@ -20,7 +20,7 @@ namespace PvPArenas.Common.Game.Score;
 /// Posts completed Arenas rounds to Tavernkeep, mirroring PvPAdventure's MatchReporter but for
 /// the "arenas" game mode. Tavernkeep already accepts this mode (see match.go UnmarshalJSON),
 /// so no server change is required. Only official dedicated servers post; Steam identities come
-/// from PvPHub's authentication.
+/// from Pylon's authentication.
 ///
 /// Every exit path reports a terminal gem result back to the end screen. The screen opens in
 /// <see cref="EndScreenGemStatus.Pending"/> and would otherwise sit on "Waiting for Tavernkeep
@@ -101,7 +101,7 @@ internal static class MatchReporter
 
         // Unofficial servers have no Steam identities at all, so a missing one there is expected
         // rather than a per-player failure worth reporting.
-        bool isOfficial = global::PvPHub.PvPHub.IsOfficial;
+        bool isOfficial = global::Pylon.Pylon.IsOfficial;
         SteamAuthentication auth = ModContent.GetInstance<SteamAuthentication>();
         Dictionary<ulong, MatchPlayerPayload> payloadPlayers = [];
         List<GemRecipient> recipients = [];
