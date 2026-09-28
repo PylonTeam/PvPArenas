@@ -47,7 +47,16 @@ public class EffectLoader : ModSystem
         try
         {
             // This is first called by the interface draw layer, where FNA graphics access is main-thread safe.
-            spawnBoxBorderEffect = ModContent.Request<Effect>(SpawnBoxBorderPath, AssetRequestMode.ImmediateLoad).Value;
+            Effect loadedEffect = ModContent.Request<Effect>(SpawnBoxBorderPath, AssetRequestMode.ImmediateLoad).Value;
+            if (loadedEffect.Parameters["borderSize"] == null
+                || loadedEffect.Parameters["outerEdgeFade"] == null
+                || loadedEffect.Parameters["innerEdgeFade"] == null)
+            {
+                Log.Warn($"Spawnbox border effect '{SpawnBoxBorderPath}' has no border mask; using pixel borders. Recompile SpawnBoxBorder.hlsl.");
+                effect = null;
+                return false;
+            }
+            spawnBoxBorderEffect = loadedEffect;
             effect = spawnBoxBorderEffect;
             return effect != null;
         }

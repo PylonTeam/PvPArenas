@@ -20,7 +20,10 @@ namespace VanillaWorldGenCPP {
 		public override string Description => "Native world generator test (safe | vec [names]) (seed:N size:WxH)";
 
 		public override void Action(CommandCaller caller, string input, string[] args) {
-			NativeLibraryLoader.Load(Mod);
+			if (!NativeLibraryLoader.TryLoad(Mod, out string error)) {
+				caller.Reply(error, Color.OrangeRed);
+				return;
+			}
 
 			int seed = GetSeed(args, 100);
 			GetSize(args, out int width, out int height, out bool custom);

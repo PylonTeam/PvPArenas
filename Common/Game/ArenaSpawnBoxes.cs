@@ -168,12 +168,12 @@ internal sealed class ArenaSpawnBoxWorld : ModSystem
             sb.End();
             sb.Begin(SpriteSortMode.Immediate, BlendState.AlphaBlend, SamplerState.PointClamp,
                 DepthStencilState.None, RasterizerState.CullNone, effect,
-                Main.GameViewMatrix.TransformationMatrix);
+                Main.GameViewMatrix.ZoomMatrix);
             effect.CurrentTechnique.Passes[0].Apply();
             sb.Draw(TextureAssets.MagicPixel.Value, outer, Color.White);
             sb.End();
             sb.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, Main.DefaultSamplerState,
-                DepthStencilState.None, Main.Rasterizer, null, Main.UIScaleMatrix);
+                DepthStencilState.None, Main.Rasterizer, null, Main.GameViewMatrix.ZoomMatrix);
         }
 
         private static void DrawPixelBorder(SpriteBatch sb, Rectangle inner, int thickness, Color color)

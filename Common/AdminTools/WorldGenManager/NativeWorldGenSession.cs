@@ -24,24 +24,50 @@ public static class NativeLibraryLoader {
 
 		public static bool IsLoaded => _handle != IntPtr.Zero;
 
-		public static void Load(Mod mod) {
-			if (_installed) {
-				return;
+		public static bool TryLoad(Mod mod, out string error) {
+			error = null;
+			if (IsLoaded) {
+				return true;
+			}
+
+			if (RuntimeInformation.ProcessArchitecture != Architecture.X64) {
+				error = "Native world generation requires an x64 process.";
+				return false;
 			}
 
 			string fileName = GetPlatformFileName();
-			string path = Path.Combine(Path.GetTempPath(), mod.Name + "_" + mod.Version, fileName);
-			Directory.CreateDirectory(Path.GetDirectoryName(path));
-
-			using (Stream source = mod.GetFileStream("lib/" + fileName))
-			using (FileStream target = File.Create(path)) {
-				source.CopyTo(target);
+			if (fileName == null) {
+				error = "Native world generation is not supported on this operating system.";
+				return false;
 			}
 
-			_handle = NativeLibrary.Load(path);
-			NativeLibrary.SetDllImportResolver(Assembly.GetExecutingAssembly(), Resolve);
-			_installed = true;
-			mod.Logger.Info("Loaded native library from " + path);
+			string resourcePath = "lib/" + fileName;
+			if (!mod.FileExists(resourcePath)) {
+				error = $"Native world generation is unavailable: '{resourcePath}' is not bundled in {mod.Name}.";
+				return false;
+			}
+
+			try {
+				string path = Path.Combine(Path.GetTempPath(), mod.Name + "_" + mod.Version, fileName);
+				Directory.CreateDirectory(Path.GetDirectoryName(path));
+
+				using (Stream source = mod.GetFileStream(resourcePath))
+				using (FileStream target = File.Create(path)) {
+					source.CopyTo(target);
+				}
+
+				if (!_installed) {
+					NativeLibrary.SetDllImportResolver(Assembly.GetExecutingAssembly(), Resolve);
+					_installed = true;
+				}
+				_handle = NativeLibrary.Load(path);
+				mod.Logger.Info("Loaded native library from " + path);
+				return true;
+			}
+			catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or DllNotFoundException or BadImageFormatException) {
+				error = $"Native world generation is unavailable: could not load '{resourcePath}': {exception.Message}";
+				return false;
+			}
 		}
 
 		private static IntPtr Resolve(string libraryName, Assembly assembly, DllImportSearchPath? searchPath) {
@@ -55,7 +81,10 @@ public static class NativeLibraryLoader {
 			if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX)) {
 				return "libWorldGen++_x64.dylib";
 			}
-			return "libWorldGen++_x64.so";
+			if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) {
+				return "libWorldGen++_x64.so";
+			}
+			return null;
 		}
 
 		public static void Unload() {
@@ -63,7 +92,7 @@ public static class NativeLibraryLoader {
 				NativeLibrary.Free(_handle);
 				_handle = IntPtr.Zero;
 			}
-			_installed = false;
+			// The resolver stays registered for this assembly and uses the current handle.
 		}
 	}
 
