@@ -1,4 +1,5 @@
 using PvPArenas.Common.Game.LoadoutSelector;
+using PvPArenas.Common.UI;
 using PvPFramework.Common.EndScreen;
 using System;
 using System.Collections.Generic;
@@ -52,7 +53,7 @@ internal sealed class BossVoteUISystem : ModSystem
                 heads[id] = BossVotePlayerHead.Create(Main.player[id]);
 
         Rectangle panel = BossVoteDrawer.ActivePanel();
-        float blend = 1f - MathF.Exp(-16f * seconds);
+        float blend = ArenaUIStyle.HoverBlend(seconds);
         for (int i = 0; i < hoverAmounts.Length; i++)
         {
             bool hover = presentation.Interactive && !PlayerInput.IgnoreMouseInterface

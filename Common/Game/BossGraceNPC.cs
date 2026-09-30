@@ -16,6 +16,7 @@ internal sealed class BossGraceNPC : GlobalNPC
     private bool originalDontTakeDamage;
 
     public override bool InstancePerEntity => true;
+    internal bool Paused => paused;
 
     public override void SetDefaults(NPC npc) => ResetState();
 

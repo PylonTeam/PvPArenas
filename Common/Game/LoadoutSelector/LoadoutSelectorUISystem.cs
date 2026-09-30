@@ -9,6 +9,20 @@ internal sealed class LoadoutSelectorUISystem : ModSystem
 {
     private const int Top = 80;
 
+    public override void OnWorldLoad() => LoadoutPreviewDrawer.Reset();
+    public override void OnWorldUnload() => LoadoutPreviewDrawer.Reset();
+
+    public override void UpdateUI(GameTime gameTime)
+    {
+        if (Main.gameMenu || ModContent.GetInstance<RoundManager>().CurrentPhase != RoundManager.RoundPhase.FreezeCountdown)
+        {
+            LoadoutPreviewDrawer.Reset();
+            return;
+        }
+
+        LoadoutPreviewDrawer.Update((float)gameTime.ElapsedGameTime.TotalSeconds);
+    }
+
     public override void ModifyInterfaceLayers(List<GameInterfaceLayer> layers)
     {
         int index = layers.FindIndex(layer => layer.Name == "Vanilla: Mouse Text");

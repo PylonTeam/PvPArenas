@@ -2,9 +2,12 @@ using PvPArenas.Common.AdminTools.WorldGenManager;
 using PvPArenas.Common.Game;
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
+using Terraria.Chat;
 using Terraria.Enums;
 using Terraria.ID;
+using Terraria.Localization;
 
 namespace PvPArenas.Common.Generation;
 
@@ -12,22 +15,23 @@ namespace PvPArenas.Common.Generation;
 internal static class MirroredJungleGenerator
 {
     private const int ColumnsPerStep = 16;
-    private const int Surface = 110, Rock = 170;
+    private const int Surface = 55, Rock = 100;
     private static readonly string[] JunglePasses =
     [
         "Small Holes", "Dirt Layer Caves", "Rock Layer Caves", "Surface Caves",
-        "Jungle", "Mud Caves To Grass", "Wet Jungle", "Hives", "Settle Liquids",
-        "Smooth World", "Muds Walls In Jungle", "Jungle Plants", "Vines", "Planting Trees"
+        "Jungle", "Mud Caves To Grass", "Wet Jungle", "Settle Liquids",
+        "Smooth World", "Muds Walls In Jungle"
     ];
 
     internal static ArenaLayout CreateLayout()
     {
-        int width = Main.maxTilesX, height = Main.maxTilesY;
-        Point red = new(width * 32 / 100, height * 43 / 100 + 22);
-        return new ArenaLayout(new Rectangle(40, 150, width - 80, height - 370),
+        int width = Main.maxTilesX;
+        Point red = new(width * 26 / 100, 276);
+        // Stay below the surface and above the compact world's UnderworldLayer (400).
+        return new ArenaLayout(new Rectangle(60, 75, width - 120, 310),
             new Point(width - 1 - red.X, red.Y), red)
         {
-            BossSpawn = new Point(width / 2, height * 43 / 100)
+            BossSpawn = new Point(width / 2, 230)
         };
     }
 
@@ -36,6 +40,42 @@ internal static class MirroredJungleGenerator
     {
         if (Main.netMode != NetmodeID.Server)
             yield break;
+        bool active = true;
+        using WorldGenProgressLog trace = new("Plantera arena", seed, Main.maxTilesX, Main.maxTilesY,
+            (message, stalled) => Main.QueueMainThreadAction(() =>
+            {
+                if (active && Main.netMode == NetmodeID.Server)
+                    ChatHelper.BroadcastChatMessage(NetworkText.FromLiteral(message), stalled ? Color.OrangeRed : Color.LightGreen);
+            }));
+        try
+        {
+            using IEnumerator<Rectangle> steps = GenerateCore(seed, protectedLobby, trace).GetEnumerator();
+            while (true)
+            {
+                bool next;
+                try { next = steps.MoveNext(); }
+                catch (Exception error) { trace.Fail(error); throw; }
+                if (!next)
+                {
+                    if (Main.netMode == NetmodeID.Server) trace.Complete();
+                    yield break;
+                }
+                yield return steps.Current;
+            }
+        }
+        finally { active = false; }
+    }
+
+    // ArenaPreparation owns this trace until its final framing and client synchronization finish.
+    internal static IEnumerable<Rectangle> GenerateWithProgress(int seed, Rectangle protectedLobby, WorldGenProgressLog trace)
+    {
+        if (Main.netMode != NetmodeID.Server) yield break;
+        foreach (Rectangle area in GenerateCore(seed, protectedLobby, trace)) yield return area;
+    }
+
+    private static IEnumerable<Rectangle> GenerateCore(int seed, Rectangle protectedLobby, WorldGenProgressLog trace)
+    {
+        trace.Report("Loading native generator", 0);
         if (Main.maxTilesX != ArenaWorldSystem.Width || Main.maxTilesY != ArenaWorldSystem.Height)
             throw new InvalidOperationException("The Jungle generator requires the compact arena world.");
         if (!NativeLibraryLoader.IsLoaded
@@ -51,12 +91,17 @@ internal static class MirroredJungleGenerator
         Rectangle right = Rectangle.Intersect(reflectedLobby, sourceHalf);
         Rectangle excluded = left.IsEmpty ? right : right.IsEmpty ? left : Rectangle.Union(left, right);
 
-        using NativeWorldGenSession session = new(seed, 3, width, height, 1, Main.GameMode);
+        NativeWorldGenSession session = null;
         Task worker = null;
         try
         {
+            NativePassProgress nativeProgress = new(trace);
+            trace.Report("Creating native session", 0);
+            session = new(seed, 3, width, height, 1, Main.GameMode, (_, _, value, pass, message) =>
+                nativeProgress.Report(pass, message == IntPtr.Zero ? "" : Marshal.PtrToStringUTF8(message)));
+            trace.Report("Capturing world tiles", 0);
             session.BindTileArrays(); // Capture and pin private arrays on the server thread.
-            worker = Task.Run(() => BuildJungle(session, width));
+            worker = Task.Run(() => BuildJungle(session, width, trace, nativeProgress));
             while (!worker.IsCompleted)
             {
                 if (Main.netMode != NetmodeID.Server)
@@ -71,6 +116,8 @@ internal static class MirroredJungleGenerator
             Main.worldSurface = Surface;
             Main.rockLayer = Rock;
             Liquid.ReInit();
+            ArenaTemplate.ClearEntitiesOutside(protectedLobby);
+            trace.Report("Publishing mirrored native terrain", 0);
             for (int start = 0; start < half; start += ColumnsPerStep)
             {
                 if (Main.netMode != NetmodeID.Server)
@@ -91,32 +138,72 @@ internal static class MirroredJungleGenerator
                         continue;
                     }
 
-                    FinishArenaTile(x, y, layout);
+                    // Native furniture has no managed chest/entity records. Real landmarks are placed last.
+                    Tile tile = Main.tile[x, y];
+                    if (tile.HasTile && Main.tileFrameImportant[tile.TileType]) tile.ClearTile();
                     if (reflectedX != x)
                         CopyReflected(x, reflectedX, y);
                 }
+                trace.Report("Publishing mirrored native terrain", end / (double)half);
                 yield return strip;
                 yield return new Rectangle(width - end, 0, end - start, height);
             }
+
+            // Inspect the complete native terrain before shaping winding caves around the lobby.
+            // Keep planning separate from publication so no unfinished strip influences the layout.
+            if (Main.netMode != NetmodeID.Server)
+                yield break;
+            trace.Report("Planning connected jungle caves", 0);
+            JungleArenaPlan plan = new(seed, layout, excluded);
+            trace.Report("Carving mirrored caves", 0);
+            for (int start = 0; start < half; start += ColumnsPerStep)
+            {
+                if (Main.netMode != NetmodeID.Server)
+                    yield break;
+                int end = Math.Min(half, start + ColumnsPerStep);
+                for (int x = start; x < end; x++)
+                for (int y = layout.ArenaBounds.Top; y < layout.ArenaBounds.Bottom; y++)
+                {
+                    int reflectedX = width - 1 - x;
+                    if (protectedLobby.Contains(x, y) || protectedLobby.Contains(reflectedX, y))
+                        continue;
+                    plan.ApplyTerrain(x, y);
+                    CopyReflected(x, reflectedX, y);
+                }
+                trace.Report("Carving mirrored caves", end / (double)half);
+                // Full-height dirty strips share the existing framing/sync contract.
+                yield return new Rectangle(start, 0, end - start, height);
+                yield return new Rectangle(width - end, 0, end - start, height);
+            }
+
+            // Multitile objects are independently placed with canonical frames on each side.
+            // No carving, furniture stripping or raw mirroring follows these passes.
+            trace.Report("Placing jungle landmarks", 0);
+            int landmarks = 0;
+            foreach (Rectangle changed in JungleArenaStructures.Place(seed, layout, protectedLobby, plan.Chambers))
+            {
+                trace.Report("Placing jungle landmarks", ++landmarks / (double)(plan.Chambers.Count * 2));
+                yield return changed;
+            }
+            trace.Report("Growing jungle foliage", 0);
+            foreach (Rectangle changed in JungleArenaFoliage.Place(seed, layout, protectedLobby))
+                yield return changed;
+            trace.Report("Growing jungle foliage", 1);
         }
         finally
         {
-            if (worker != null)
-            {
-                if (!worker.IsCompleted)
-                    session.RequestCancel();
-                // Normal completion observes errors above; disposal joins cancelled work before unpinning/freeing it.
-                try { worker.GetAwaiter().GetResult(); }
-                catch (Exception) { }
-            }
+            session?.DisposeWhenCompleted(worker);
         }
     }
 
-    private static void BuildJungle(NativeWorldGenSession session, int width)
+    private static void BuildJungle(NativeWorldGenSession session, int width, WorldGenProgressLog trace, NativePassProgress nativeProgress)
     {
+        trace.Report("Initializing native generator", 0);
         session.Initialize();
+        nativeProgress.Begin(["Reset", "Terrain"]);
         Run(session, ["Reset", "Terrain"]);
         // Reset/Terrain overwrite these fields, so configure the compact jungle only after they finish.
+        trace.Report("Configuring compact jungle", 0);
         session.SetField("WorldSurface", Surface);
         session.SetField("GenWorldSurface", Surface);
         session.SetField("GenWorldSurfaceLow", Surface - 10);
@@ -131,7 +218,9 @@ internal static class MirroredJungleGenerator
         session.SetField("GenDungeonSide", 1);
         session.SetField("GenWaterLine", 320);
         session.SetField("GenLavaLine", 550);
+        nativeProgress.Begin(JunglePasses);
         Run(session, JunglePasses);
+        trace.Report("Reading native jungle tiles", 0);
         session.SyncToTml(); // Native output goes to the session's private arrays, never the live tilemap.
     }
 
@@ -140,36 +229,6 @@ internal static class MirroredJungleGenerator
         WgResult result = session.RunPasses(passes);
         if (result != WgResult.Ok)
             throw new InvalidOperationException("WorldGen++ Jungle generation failed: " + result);
-    }
-
-    private static void FinishArenaTile(int x, int y, ArenaLayout layout)
-    {
-        Tile tile = Main.tile[x, y];
-        // Furniture needs separate entities and directional frames; it cannot be mirrored as raw tiles.
-        if (tile.HasTile && Main.tileFrameImportant[tile.TileType])
-            tile.ClearTile();
-
-        Point spawn = layout.RedSpawn;
-        bool ledge = Math.Abs(x - spawn.X) <= 14 && y >= spawn.Y && y <= spawn.Y + 3;
-        if (ledge)
-        {
-            tile.ClearTile();
-            tile.LiquidAmount = 0;
-            tile.HasTile = true;
-            tile.TileType = TileID.JungleGrass;
-            return;
-        }
-        bool spawnRoom = Math.Abs(x - spawn.X) <= 14 && y >= spawn.Y - 12 && y < spawn.Y;
-        double bossX = (x - (Main.maxTilesX - 1) / 2d) / 22;
-        double bossY = (y - layout.BossSpawn.Y) / 18;
-        float progress = Math.Clamp((x - spawn.X) / (float)(layout.BossSpawn.X - spawn.X), 0f, 1f);
-        float passageY = MathHelper.Lerp(spawn.Y - 6, layout.BossSpawn.Y, progress);
-        bool passage = x >= spawn.X - 14 && Math.Abs(y - passageY) <= 8;
-        if (spawnRoom || bossX * bossX + bossY * bossY < 1 || passage)
-        {
-            tile.ClearTile();
-            tile.LiquidAmount = 0;
-        }
     }
 
     private static void CopyReflected(int sourceX, int destinationX, int y)

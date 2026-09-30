@@ -7,6 +7,8 @@ using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Xna.Framework;
 using Terraria;
 using Terraria.ID;
@@ -16,15 +18,31 @@ using Terraria.WorldBuilding;
 namespace PvPArenas.Common.AdminTools.WorldGenManager;
 
 public static class NativeLibraryLoader {
+	private static readonly object Gate = new();
+	// Framework-owned state survives mod reloads without keeping a mod assembly rooted.
+	private static readonly int[] PendingCleanup = GetCleanupCounter();
 	private static IntPtr _handle;
 	private static bool _resolverInstalled;
+	private static bool _unloadRequested;
+	private static int _activeSessions;
 	// The original API 1.0 build emitted AVX-512 even in its session constructor.
 	private const string Avx512Build = "54DABF6CE366A4C1444822C0A742C7B33A7BACAA35C8F981B0C4760DE353428F";
 	public static bool IsLoaded => _handle != IntPtr.Zero;
 	public static string Error { get; private set; }
+	internal static int PendingCleanupCount => Volatile.Read(ref PendingCleanup[0]);
+	internal static int ActiveSessionCount { get { lock (Gate) return _activeSessions; } }
+	private const string PendingCleanupError = "Previous WorldGen++ work is still stopping. Wait for it to finish; restart the server if it remains stuck.";
 
 	public static bool TryLoad(Mod mod, out string error) {
-		if (IsLoaded) { error = null; return true; }
+		lock (Gate) return TryLoadCore(mod, out error);
+	}
+
+	private static bool TryLoadCore(Mod mod, out string error) {
+		if (PendingCleanupCount != 0 || _unloadRequested) {
+			Error = error = PendingCleanupError;
+			return false;
+		}
+		if (IsLoaded) { Error = error = null; return true; }
 		try {
 			if (!OperatingSystem.IsWindows() || RuntimeInformation.ProcessArchitecture != Architecture.X64)
 				throw new PlatformNotSupportedException("WorldGen++ requires Windows x64.");
@@ -59,12 +77,55 @@ public static class NativeLibraryLoader {
 		}
 	}
 
+	internal static void ThrowIfUnavailable() {
+		lock (Gate) {
+			if (PendingCleanupCount != 0 || _unloadRequested)
+				throw new InvalidOperationException(PendingCleanupError);
+			if (!IsLoaded) throw new InvalidOperationException("WorldGen++ is not loaded.");
+		}
+	}
+
+	internal static void AcquireSession() {
+		lock (Gate) {
+			ThrowIfUnavailable();
+			_activeSessions++;
+		}
+	}
+
+	internal static void ReleaseSession() {
+		lock (Gate) {
+			_activeSessions--;
+			if (_activeSessions == 0 && _unloadRequested) FreeLibrary();
+		}
+	}
+
+	internal static void BeginCleanup() => Interlocked.Increment(ref PendingCleanup[0]);
+	internal static void EndCleanup() => Interlocked.Decrement(ref PendingCleanup[0]);
+
+	private static int[] GetCleanupCounter() {
+		const string key = "PvPArenas.WorldGen.PendingCleanup";
+		lock (AppDomain.CurrentDomain) {
+			if (AppDomain.CurrentDomain.GetData(key) is int[] counter) return counter;
+			int[] created = [0];
+			AppDomain.CurrentDomain.SetData(key, created);
+			return created;
+		}
+	}
+
 	internal static string GetCompatibilityError(string hash) =>
 		hash == Avx512Build && (!Avx512F.IsSupported || !Avx512BW.IsSupported || !Avx512DQ.IsSupported || !Avx512CD.IsSupported)
 			? "This WorldGen++ DLL needs AVX-512. Ask cactus for a Windows x64 build without AVX-512."
 			: null;
 
 	public static void Unload() {
+		lock (Gate) {
+			_unloadRequested = true;
+			if (_activeSessions == 0) FreeLibrary();
+		}
+	}
+
+	private static void FreeLibrary() {
+		_unloadRequested = false;
 		if (_handle == IntPtr.Zero) return;
 		NativeLibrary.Free(_handle);
 		_handle = IntPtr.Zero;
@@ -200,6 +261,7 @@ public sealed class NativeWorldGenSession : IDisposable {
 	private Dictionary<string, double> _worldFields;
 	private string[] _passNames;
 	private bool _initialized;
+	private int _cleanupScheduled;
 	private int _stride;
 	private HashSet<(int X, int Y)> _seenChests = [];
 
@@ -222,8 +284,15 @@ public sealed class NativeWorldGenSession : IDisposable {
 			Seed = seed, SizeClass = sizeClass, Width = width, Height = height, Evil = evil, GameMode = gameMode,
 			ProgressCallback = Marshal.GetFunctionPointerForDelegate(_callback)
 		};
-		_handle = Native.WG_CreateSession(ref desc);
-		if (!IsValid) throw new InvalidOperationException("WorldGen++ could not create a session.");
+		NativeLibraryLoader.AcquireSession();
+		try {
+			_handle = Native.WG_CreateSession(ref desc);
+			if (!IsValid) throw new InvalidOperationException("WorldGen++ could not create a session.");
+		}
+		catch {
+			NativeLibraryLoader.ReleaseSession();
+			throw;
+		}
 	}
 
 	// Capture on the main thread before each job; retained sessions reuse their pinned working arrays.
@@ -492,17 +561,41 @@ public sealed class NativeWorldGenSession : IDisposable {
 		if (result != (int)WgResult.Ok) throw new InvalidOperationException($"{operation} failed ({(WgResult)result}).");
 	}
 
+	// A native pass may ignore cancellation. Keep its buffers and DLL alive without blocking the server.
+	internal void DisposeWhenCompleted(Task worker) {
+		if (Interlocked.Exchange(ref _cleanupScheduled, 1) != 0) return;
+		if (worker == null || worker.IsCompleted) {
+			_ = worker?.Exception;
+			Dispose();
+			return;
+		}
+		NativeLibraryLoader.BeginCleanup();
+		var logger = Log.Base;
+		_ = Task.Run(async () => {
+			try { RequestCancel(); }
+			catch (Exception exception) { logger.Warn("WorldGen++ cancellation request failed: " + exception.Message); }
+			try { await worker.ConfigureAwait(false); }
+			catch (Exception) { } // Observe a cancelled/failed worker; its job already owns user-facing diagnostics.
+			finally {
+				try { Dispose(); }
+				catch (Exception exception) { logger.Error("WorldGen++ session cleanup failed.", exception); }
+				finally { NativeLibraryLoader.EndCleanup(); }
+			}
+		});
+	}
+
 	public void Dispose() {
-		// Caller must finish/cancel and join its worker before disposing the session or unloading the DLL.
-		IntPtr handle = _handle;
-		_handle = IntPtr.Zero;
-		try { if (handle != IntPtr.Zero) Native.WG_DestroySession(handle); }
+		// The worker owner must use DisposeWhenCompleted while a worker can still access this session.
+		IntPtr handle = Interlocked.Exchange(ref _handle, IntPtr.Zero);
+		if (handle == IntPtr.Zero) return;
+		try { Native.WG_DestroySession(handle); }
 		finally {
 			if (_pins != null) foreach (GCHandle pin in _pins) if (pin.IsAllocated) pin.Free();
 			_pins = null;
 			_tiles = _sourceTiles = null;
 			_callback = null;
 			GC.SuppressFinalize(this);
+			NativeLibraryLoader.ReleaseSession();
 		}
 	}
 }

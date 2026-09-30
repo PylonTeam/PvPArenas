@@ -17,6 +17,7 @@ internal sealed class ArenaPlayer : ModPlayer
     private bool roundPrepared;
     private bool arenaSpawnActive;
     private bool generationStaged;
+    private bool suppressArenaSpawn;
 
     internal int SelectedLoadoutIndex;
 
@@ -137,9 +138,6 @@ internal sealed class ArenaPlayer : ModPlayer
         if ((manager.CurrentPhase is RoundManager.RoundPhase.FreezeCountdown or RoundManager.RoundPhase.Playing)
             && ((Team)Player.team is Team.Red or Team.Blue))
         {
-            if (manager.CurrentLayout != null)
-                SetArenaSpawn(manager.CurrentLayout.PlayerSpawn((Team)Player.team));
-
             if (!roundPrepared
                 && manager.CurrentLayout != null
                 && manager.TryGetSelectedPreset(out BossFightPreset preset))
@@ -154,7 +152,8 @@ internal sealed class ArenaPlayer : ModPlayer
                 }
                 else
                 {
-                    Prepare(Player, preset, manager.CurrentLayout);
+                    if (!Prepare(Player, preset, manager.CurrentLayout))
+                        return;
                 }
             }
 
@@ -163,27 +162,32 @@ internal sealed class ArenaPlayer : ModPlayer
         }
     }
 
-    internal static void Prepare(Player player, BossFightPreset preset, ArenaLayout layout)
+    internal static bool Prepare(Player player, BossFightPreset preset, ArenaLayout layout)
     {
-        if (player?.active != true || preset == null || layout == null)
-            return;
+        if (Main.netMode != NetmodeID.Server || player?.active != true || preset == null || layout == null)
+            return false;
+
+        if (!ArenaRespawns.TrySelect(player, preset, layout, out Point spawn))
+        {
+            ModContent.GetInstance<RoundManager>().ReportSpawnFailure(
+                $"No safe {(Team)player.team} spawn remains in this arena.");
+            return false;
+        }
 
         ArenaTileSync.Send(layout.ArenaBounds, player.whoAmI);
-
-        if (player.dead)
-            player.Spawn(PlayerSpawnContext.ReviveFromDeath);
-
         ArenaPlayer arenaPlayer = player.GetModPlayer<ArenaPlayer>();
-        arenaPlayer.SetArenaSpawn(layout.PlayerSpawn((Team)player.team));
+        arenaPlayer.SetArenaSpawn(spawn);
+        arenaPlayer.Revive();
         arenaPlayer.ResetBossDamage();
         ScoreboardService.ResetPlayer(player);
         ApplyLoadout(player, preset);
-        Teleport(player, layout.PlayerSpawn((Team)player.team));
+        Teleport(player, spawn);
         arenaPlayer.roundPrepared = true;
         player.hostile = true;
 
         if (Main.netMode == NetmodeID.Server)
             NetMessage.SendData(MessageID.TogglePVP, -1, -1, null, player.whoAmI);
+        return true;
     }
 
     internal static void ReleaseAll()
@@ -224,8 +228,7 @@ internal sealed class ArenaPlayer : ModPlayer
         player.tileEntityAnchor.Clear();
         NetMessage.SendData(MessageID.SyncPlayerChest, player.whoAmI, -1, null, -1);
         ClearCarriedItems(player, sync: true);
-        if (player.dead)
-            player.Spawn(PlayerSpawnContext.ReviveFromDeath);
+        arenaPlayer.Revive();
         player.hostile = false;
         player.mount.Dismount(player);
         player.RemoveAllGrapplingHooks();
@@ -247,26 +250,51 @@ internal sealed class ArenaPlayer : ModPlayer
     private static void OnPlayerSpawn(On_Player.orig_Spawn orig, Player player,
         PlayerSpawnContext context)
     {
-        orig(player, context);
-
+        ArenaPlayer arenaPlayer = player.GetModPlayer<ArenaPlayer>();
+        if (Main.netMode != NetmodeID.Server || arenaPlayer.suppressArenaSpawn)
+        {
+            orig(player, context);
+            return;
+        }
         RoundManager manager = ModContent.GetInstance<RoundManager>();
         if (manager.CurrentPhase == RoundManager.RoundPhase.Generating)
         {
-            if (Main.netMode == NetmodeID.Server)
-                Stage(player, manager.StagingSpawn);
+            orig(player, context);
+            Stage(player, manager.StagingSpawn);
             return;
         }
         Team team = (Team)player.team;
-        if (team is not (Team.Red or Team.Blue)
-            || manager.CurrentPhase is not (RoundManager.RoundPhase.Generating
-                or RoundManager.RoundPhase.FreezeCountdown or RoundManager.RoundPhase.Playing)
-            || manager.CurrentLayout == null)
+        if (!player.active || team is not (Team.Red or Team.Blue)
+            || manager.CurrentPhase is not (RoundManager.RoundPhase.FreezeCountdown or RoundManager.RoundPhase.Playing)
+            || manager.CurrentLayout == null || !manager.TryGetSelectedPreset(out BossFightPreset preset))
+        {
+            orig(player, context);
             return;
+        }
 
-        // Teleport to spawn
-        Point spawn = manager.CurrentLayout.PlayerSpawn(team);
-        player.GetModPlayer<ArenaPlayer>().SetArenaSpawn(spawn);
+        if (!ArenaRespawns.TrySelect(player, preset, manager.CurrentLayout, out Point spawn))
+        {
+            manager.ReportSpawnFailure($"No safe {team} spawn remains in this arena.");
+            player.SpawnX = player.SpawnY = -1;
+            orig(player, context);
+            return;
+        }
+
+        // Packet 12 rebroadcasts these coordinates after Spawn returns. Other clients
+        // therefore see the server's choice, and the owner receives the teleport below.
+        arenaPlayer.SetArenaSpawn(spawn);
+        orig(player, context);
+        ArenaTileSync.Send(new Rectangle(spawn.X - 2, spawn.Y - 4, 5, 6), player.whoAmI);
         Teleport(player, spawn);
+    }
+
+    private void Revive()
+    {
+        if (!Player.dead)
+            return;
+        suppressArenaSpawn = true;
+        try { Player.Spawn(PlayerSpawnContext.ReviveFromDeath); }
+        finally { suppressArenaSpawn = false; }
     }
 
     private static bool HasCarriedItems(Player player)

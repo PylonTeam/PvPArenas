@@ -25,11 +25,15 @@ internal sealed class WorldGenPassRunner : ModSystem
     private NativeWorldGenSession session;
     private Task worker;
     private long nextStatusTick;
+    private WorldGenProgressLog jobLog;
+    private WorldGenRequester requester;
+    private string progressNotice;
+    private NativePassProgress nativeProgress;
 
     internal IReadOnlyList<string> PassNames => passNames;
     internal bool Busy => busy;
     internal bool Available => available;
-    internal string Status => status;
+    internal string Status => Volatile.Read(ref progressNotice) ?? status;
     internal double Progress => Volatile.Read(ref progress);
     internal int Seed => seed;
 
@@ -79,7 +83,9 @@ internal sealed class WorldGenPassRunner : ModSystem
         return catalog.Where(requested.Contains).ToArray();
     }
 
-    internal bool TryRun(IReadOnlyList<string> selected, out string error)
+    internal bool TryRun(IReadOnlyList<string> selected, out string error) => TryRun(selected, -1, out error);
+
+    internal bool TryRun(IReadOnlyList<string> selected, int initiatingPlayer, out string error)
     {
         error = "";
         bool preparingArena = ModContent.GetInstance<RoundManager>()?.CurrentPhase == RoundManager.RoundPhase.Generating;
@@ -94,25 +100,44 @@ internal sealed class WorldGenPassRunner : ModSystem
         catch (ArgumentException exception) { error = exception.Message; return false; }
         try
         {
+            NativeLibraryLoader.ThrowIfUnavailable();
             bool resetWorld = ordered.Contains("Reset", StringComparer.OrdinalIgnoreCase);
             bool initialize = session == null || resetWorld;
+            if (initialize) seed = Random.Shared.Next(1, int.MaxValue);
+            int jobEpoch = ++epoch;
+            requester = WorldGenRequester.Capture(initiatingPlayer);
+            WorldGenRequester jobRequester = requester;
+            jobLog = new WorldGenProgressLog($"Admin ({requester.Description})", seed, Main.maxTilesX, Main.maxTilesY,
+                (message, stalled) => ReportNotice(jobEpoch, jobRequester, message, stalled));
+            nativeProgress = new NativePassProgress(jobLog, (stage, fraction) =>
+            {
+                if (jobEpoch != Volatile.Read(ref epoch)) return;
+                status = stage;
+                Volatile.Write(ref progress, fraction);
+                QueueStatus(jobEpoch);
+            });
+            Log.Debug($"WorldGen seed={seed} passes({ordered.Length})=[{string.Join(", ", ordered)}]");
+            progressNotice = null;
             if (initialize)
             {
                 session?.Dispose();
                 session = null;
-                seed = Random.Shared.Next(1, int.MaxValue);
+                jobLog.Report("Creating native session", 0);
                 session = CreateSession(seed, ReportProgress);
             }
+            jobLog.Report("Capturing world tiles", 0);
             session.BindTileArrays();
             // Leave the match idle until the operator starts it on the new terrain.
             ModContent.GetInstance<RoundManager>().ExecuteAdminAction(RoundManager.AdminAction.SetIdle, -1);
             busy = true;
             status = "Preparing…";
             progress = 0;
-            int jobEpoch = ++epoch;
             nextStatusTick = 0;
             WorldGenManagerNetHandler.SendStatus(this, includePasses: true);
-            worker = Task.Run(() => Generate(ordered, jobEpoch, initialize, resetWorld));
+            NativeWorldGenSession jobSession = session;
+            WorldGenProgressLog trace = jobLog;
+            NativePassProgress batchProgress = nativeProgress;
+            worker = Task.Run(() => Generate(jobSession, trace, batchProgress, ordered, jobEpoch, initialize, resetWorld));
             return true;
         }
         catch (Exception exception)
@@ -120,6 +145,10 @@ internal sealed class WorldGenPassRunner : ModSystem
             session?.Dispose();
             session = null;
             busy = false;
+            jobLog?.Fail(exception);
+            jobLog = null;
+            nativeProgress = null;
+            progressNotice = null;
             status = error = exception.Message;
             Log.Error(exception);
             return false;
@@ -130,23 +159,39 @@ internal sealed class WorldGenPassRunner : ModSystem
         new(runSeed, Main.maxTilesX switch { 4200 => 0, 6400 => 1, 8400 => 2, _ => 3 },
             Main.maxTilesX, Main.maxTilesY, WorldGen.crimson ? 2 : 1, Main.GameMode, callback);
 
-    private void Generate(string[] ordered, int jobEpoch, bool initialize, bool resetWorld)
+    private void Generate(NativeWorldGenSession jobSession, WorldGenProgressLog trace, NativePassProgress batchProgress,
+        string[] ordered, int jobEpoch, bool initialize, bool resetWorld)
     {
         Exception failure = null;
         Stopwatch timer = Stopwatch.StartNew();
+        void Stage(string name)
+        {
+            trace.Report(name, 0);
+            if (jobEpoch != Volatile.Read(ref epoch)) return;
+            status = name;
+            QueueStatus(jobEpoch);
+        }
         try
         {
             if (initialize)
             {
-                session.Initialize();
+                Stage("Initializing native generator");
+                jobSession.Initialize();
                 // Bootstrap a loaded world once; later jobs retain native prerequisite state.
                 if (!resetWorld)
-                    Check(session.RunPass("Reset"));
+                {
+                    batchProgress.Begin(["Reset"]);
+                    Check(jobSession.RunPass("Reset"));
+                }
             }
-            session.SyncFromTml();
-            session.CopyWorldFieldsToNative();
-            Check(session.RunPasses(ordered));
-            session.SyncToTml(); // Writes staging arrays; Terraria is updated only in Finish.
+            Stage("Importing world tiles");
+            jobSession.SyncFromTml();
+            jobSession.CopyWorldFieldsToNative();
+            batchProgress.Begin(ordered);
+            Check(jobSession.RunPasses(ordered));
+            Stage("Reading generated tiles");
+            jobSession.SyncToTml(); // Writes staging arrays; Terraria is updated only in Finish.
+            Stage("Waiting for server publication");
         }
         catch (Exception exception) { failure = exception; }
         Main.QueueMainThreadAction(() =>
@@ -158,19 +203,41 @@ internal sealed class WorldGenPassRunner : ModSystem
 
     private void ReportProgress(IntPtr userData, int taskId, float value, int pass, IntPtr message)
     {
-        status = message == IntPtr.Zero ? "Generating…" : Marshal.PtrToStringUTF8(message) ?? "Generating…";
-        Volatile.Write(ref progress, Math.Clamp((double)value, 0, 1));
+        if (!Volatile.Read(ref busy)) return;
+        nativeProgress?.Report(pass, message == IntPtr.Zero ? "" : Marshal.PtrToStringUTF8(message));
+    }
+
+    private void QueueStatus(int jobEpoch)
+    {
         long now = Environment.TickCount64;
         if (now < nextStatusTick)
             return;
         nextStatusTick = now + 250;
-        int jobEpoch = epoch;
         // World/entity hooks are paused, so dispatch progress through the main-thread queue.
         Main.QueueMainThreadAction(() =>
         {
             if (jobEpoch == epoch && busy)
                 WorldGenManagerNetHandler.SendStatus(this);
         });
+    }
+
+    private void ReportNotice(int jobEpoch, WorldGenRequester recipient, string message, bool stalled)
+    {
+        if (jobEpoch != Volatile.Read(ref epoch)) return;
+        Volatile.Write(ref progressNotice, stalled ? "No progress · " + status : null);
+        Main.QueueMainThreadAction(() =>
+        {
+            if (Main.netMode != NetmodeID.Server || jobEpoch != epoch || !busy) return;
+            recipient.Notify(message, stalled);
+            WorldGenManagerNetHandler.SendStatus(this);
+        });
+    }
+
+    private void PublishStage(string name)
+    {
+        status = name;
+        jobLog?.Report(name, 0);
+        WorldGenManagerNetHandler.SendStatus(this);
     }
 
     private void Finish(Exception failure, bool resetWorld, TimeSpan elapsed)
@@ -180,8 +247,10 @@ internal sealed class WorldGenPassRunner : ModSystem
         {
             if (failure != null)
                 throw failure;
+            PublishStage("Publishing generated tiles");
             session.CommitTiles();
             committed = true;
+            PublishStage("Applying world metadata");
             session.ApplyWorldFields();
             if (resetWorld)
             {
@@ -190,6 +259,7 @@ internal sealed class WorldGenPassRunner : ModSystem
                 TileEntity.ByPosition.Clear();
             }
             session.ImportChests(resetWorld);
+            PublishStage("Framing tiles");
             WorldGen.RangeFrame(1, 1, Main.maxTilesX - 2, Main.maxTilesY - 2);
             Liquid.ReInit();
         }
@@ -202,6 +272,7 @@ internal sealed class WorldGenPassRunner : ModSystem
             revision++;
             try
             {
+                PublishStage("Synchronizing tiles to clients");
                 if (Main.netMode == NetmodeID.Server)
                 {
                     Netplay.ResetSections();
@@ -209,6 +280,7 @@ internal sealed class WorldGenPassRunner : ModSystem
                     ArenaTileSync.Send(new Rectangle(0, 0, Main.maxTilesX, Main.maxTilesY));
                 }
                 RefreshRendering();
+                PublishStage("Finding player spawn");
                 RelocatePlayers();
             }
             catch (Exception exception) { failure ??= exception; }
@@ -218,6 +290,8 @@ internal sealed class WorldGenPassRunner : ModSystem
             if (failure != null)
             {
                 status = "Generation failed: " + failure.Message;
+                jobLog?.Fail(failure);
+                requester?.Notify(status + $" (seed {seed}). See server.log.", warning: true);
                 Log.Error(failure);
                 session?.Dispose();
                 session = null;
@@ -226,12 +300,17 @@ internal sealed class WorldGenPassRunner : ModSystem
             {
                 status = $"Done · {elapsed.TotalSeconds:0.0}s · Seed {seed}";
                 progress = 1;
+                jobLog?.Complete();
             }
         }
         finally
         {
             worker = null;
             busy = false;
+            jobLog?.Dispose();
+            jobLog = null;
+            nativeProgress = null;
+            progressNotice = null;
             WorldGenManagerNetHandler.SendStatus(this, includePasses: true);
         }
     }
@@ -293,13 +372,14 @@ internal sealed class WorldGenPassRunner : ModSystem
     internal void Shutdown()
     {
         epoch++; // Queued completion must not touch a subsequently loaded world.
-        if (worker is { IsCompleted: false })
-            session?.RequestCancel();
-        worker?.GetAwaiter().GetResult();
-        session?.Dispose();
+        busy = false;
+        jobLog?.Dispose();
+        jobLog = null;
+        nativeProgress = null;
+        progressNotice = null;
+        session?.DisposeWhenCompleted(worker);
         session = null;
         worker = null;
-        busy = false;
     }
 
     internal void SetAwaitingServer() { busy = true; status = "Starting…"; progress = 0; }
@@ -308,7 +388,7 @@ internal sealed class WorldGenPassRunner : ModSystem
     {
         writer.Write(busy);
         writer.Write(available);
-        writer.Write(status);
+        writer.Write(Status);
         writer.Write(Progress);
         writer.Write(seed);
         writer.Write(revision);

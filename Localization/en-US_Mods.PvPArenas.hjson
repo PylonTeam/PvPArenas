@@ -7,6 +7,14 @@ Voting: {
 	MapUnavailable: Map not ready
 }
 
+LoadoutSelector: {
+	Header: Choose your loadout
+	ArrangeItems: Arrange items
+	Done: Done
+	Sandbox: Sandbox
+	UnnamedLoadout: "Loadout {0}"
+}
+
 Round: {
 	PreparationFailedStatus: Arena setup failed
 	PreparationFailed: Arena setup failed: {0} The selected boss has been kept. Fix the arena, then use Start Round in Arena Game Manager to retry, or Start Voting to choose again.

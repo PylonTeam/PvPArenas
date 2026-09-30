@@ -391,7 +391,8 @@ internal sealed class RoundManager : ModSystem
         currentLayout = layout;
         foreach (Player player in Main.player)
             if (player?.active == true && (Team)player.team is Team.Red or Team.Blue)
-                ArenaPlayer.Prepare(player, preset, currentLayout);
+                if (!ArenaPlayer.Prepare(player, preset, currentLayout))
+                    return;
 
         int countdownSeconds = Math.Max(0, ModContent.GetInstance<ServerConfig>().FreezeCountdownSeconds);
         if (countdownSeconds == 0)
@@ -401,6 +402,15 @@ internal sealed class RoundManager : ModSystem
         }
 
         SetPhase(RoundPhase.FreezeCountdown, SecondsToTicks(countdownSeconds));
+    }
+
+    internal void ReportSpawnFailure(string failure)
+    {
+        if (Main.netMode != NetmodeID.Server)
+            return;
+        ModContent.GetInstance<BossManager>().Cleanup();
+        ArenaPlayer.ReleaseAll();
+        HoldPreparationFailure(failure);
     }
 
     private void HoldPreparationFailure(string failure)

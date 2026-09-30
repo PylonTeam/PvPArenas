@@ -7,14 +7,13 @@ using Terraria.GameContent;
 using Terraria.GameInput;
 using Terraria.ID;
 using Terraria.Localization;
+using static PvPArenas.Common.UI.ArenaUIStyle;
 
 namespace PvPArenas.Common.Game.BossVoting;
 
 /// <summary>ErkySSC's vote presentation adapted to four permanent arena choices.</summary>
 internal static class BossVoteDrawer
 {
-    private static readonly Color Yellow = new(246, 216, 72);
-    private static readonly Color Accent = new(153, 218, 158);
     private static Texture2D PanelBackground => Main.Assets.Request<Texture2D>("Images/UI/PanelBackground").Value;
     private static Texture2D PanelBorder => Main.Assets.Request<Texture2D>("Images/UI/PanelBorder").Value;
     private static readonly RasterizerState ClipRasterizer = new() { CullMode = CullMode.None, ScissorTestEnable = true };
@@ -31,7 +30,6 @@ internal static class BossVoteDrawer
         new(panel.X + 12 + index % 2 * (panel.Width - 18) / 2,
             panel.Y + 105 + index / 2 * 83, (panel.Width - 30) / 2, 77);
 
-    private static float Ease(float t) => t * t * (3f - 2f * t);
     private static string Label(string key) => Language.GetTextValue("Mods.PvPArenas.Voting." + key);
 
     internal static void Draw(BossVotePresentation presentation, Dictionary<int, Player> heads, float[] hover)
@@ -63,7 +61,7 @@ internal static class BossVoteDrawer
             Point mouse = new(Main.mouseX, Main.mouseY);
             bool interactive = presentation.Interactive && vote.Active && !PlayerInput.IgnoreMouseInterface;
             if (panel.Contains(mouse)) Main.LocalPlayer.mouseInterface = true;
-            DrawPanel(panel, new Color(25, 34, 66), new Color(81, 99, 151), 10);
+            DrawPanel(panel, PanelFill, PanelEdge, 10);
             Header(Label(presentation.Complete ? "CompleteHeader" : "ActiveHeader"),
                 new Vector2(panel.Center.X, panel.Y + 5), panel.Width - 28);
             Text(presentation.Complete ? Lang.GetNPCNameValue(FightPresets.BossType(presentation.Winner)) : Label("ChooseBoss"),
@@ -80,7 +78,7 @@ internal static class BossVoteDrawer
             Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value, track, Color.Black * (.3f * opacity));
             Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value,
                 new Rectangle(track.X, track.Y, (int)(track.Width * progress), track.Height),
-                new Color(149, 175, 220) * opacity);
+                Progress * opacity);
 
             float transition = Ease(presentation.ResultTransition), panelOpacity = opacity;
             // The winning tile draws last so fading choices cannot cover it.
@@ -126,8 +124,7 @@ internal static class BossVoteDrawer
         interactive &= available;
         if (!available) hover = 0f;
         bool selected = resultChoice || vote.LocalVote == index;
-        Color fill = Color.Lerp(new Color(33, 44, 78), new Color(52, 67, 108), hover);
-        if (selected) fill = Color.Lerp(fill, Accent, .14f);
+        Color fill = ChoiceFill(hover, selected ? 1f : 0f);
         DrawPanel(box, fill, Color.Transparent, 8);
         if (selected)
             Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value,
@@ -207,7 +204,7 @@ internal static class BossVoteDrawer
     private static void Header(string value, Vector2 position, float maxWidth)
     {
         float scale = Math.Min(.63f, maxWidth / Math.Max(1f, FontAssets.DeathText.Value.MeasureString(value).X));
-        Utils.DrawBorderStringBig(Main.spriteBatch, value, position, Yellow * opacity, scale, .5f, 0f);
+        Utils.DrawBorderStringBig(Main.spriteBatch, value, position, Title * opacity, scale, .5f, 0f);
     }
 
     private static void Text(string value, Vector2 position, Color color, float scale, float maxWidth, float anchor = .5f)

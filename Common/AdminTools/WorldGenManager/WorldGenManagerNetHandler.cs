@@ -22,7 +22,7 @@ internal static class WorldGenManagerNetHandler
     {
         WorldGenPassRunner runner = ModContent.GetInstance<WorldGenPassRunner>();
         if (Main.netMode != NetmodeID.MultiplayerClient)
-            return runner.TryRun(passes, out error);
+            return runner.TryRun(passes, Main.myPlayer, out error);
         error = "";
         if (runner.Busy || passes == null || passes.Count == 0 || passes.Count > MaxPasses)
         {
@@ -60,7 +60,7 @@ internal static class WorldGenManagerNetHandler
                 string[] names = new string[count];
                 for (int i = 0; i < count; i++)
                     names[i] = reader.ReadString();
-                runner.TryRun(names, out error);
+                runner.TryRun(names, whoAmI, out error);
             }
             if (!string.IsNullOrEmpty(error))
                 ChatHelper.SendChatMessageToClient(NetworkText.FromLiteral(error), Color.OrangeRed, whoAmI);

@@ -27,6 +27,7 @@ internal sealed class BossManager : ModSystem
     private Rectangle roundArea;
     private Rectangle bossArea;
     private bool loggedGolemDistanceRecovery;
+    private readonly KingSlimeArena kingSlime = new();
 
     internal int BossIndex => bossIndex;
 
@@ -58,6 +59,8 @@ internal sealed class BossManager : ModSystem
             layout.ArenaBounds.Width * 16, layout.ArenaBounds.Height * 16);
         // Plantera must be able to pursue players through both mirrored cave networks.
         Rectangle bossTiles = preset.Boss.Type == NPCID.Plantera ? layout.ArenaBounds : layout.BossBounds;
+        if (preset.Boss.Type == NPCID.KingSlime)
+            bossTiles = Rectangle.Intersect(layout.ArenaBounds, KingSlimeArena.TileBounds);
         bossArea = new Rectangle(bossTiles.X * 16, bossTiles.Y * 16,
             bossTiles.Width * 16, bossTiles.Height * 16);
         ClearRoundProjectiles();
@@ -73,6 +76,12 @@ internal sealed class BossManager : ModSystem
         missingTicks = 0;
         loggedGolemDistanceRecovery = false;
         NPC boss = Main.npc[index];
+        if (bossType == NPCID.KingSlime)
+        {
+            Point size = KingSlimeArena.FullSize;
+            if (KingSlimeArena.TryFindLanding(bossArea, boss.Bottom, size.X, size.Y, out Vector2 landing))
+                boss.Bottom = landing;
+        }
         int graceSeconds = Math.Clamp(preset.GracePeriodSeconds, 0, 300);
         boss.GetGlobalNPC<BossGraceNPC>().Begin(boss, graceSeconds);
         int target = FindManagedTarget(boss);
@@ -94,7 +103,18 @@ internal sealed class BossManager : ModSystem
             missingTicks = 0;
             int target = FindManagedTarget(boss);
             boss.target = target >= 0 ? target : Main.maxPlayers;
-            ContainBoss(boss);
+            if (bossType == NPCID.KingSlime)
+            {
+                if (!boss.GetGlobalNPC<BossGraceNPC>().Paused)
+                {
+                    Vector2 preferred = target >= 0 ? Main.player[target].Bottom : bossArea.Center.ToVector2();
+                    // Leave space beside the target instead of deliberately reappearing on their hitbox.
+                    if (target >= 0) preferred.X += boss.Center.X < preferred.X ? -192f : 192f;
+                    kingSlime.Update(boss, bossArea, preferred);
+                }
+            }
+            else
+                ContainBoss(boss);
             boss.timeLeft = Math.Max(boss.timeLeft, 3600);
             return BossState.Alive;
         }
@@ -131,6 +151,7 @@ internal sealed class BossManager : ModSystem
         bossType = 0;
         missingTicks = 0;
         loggedGolemDistanceRecovery = false;
+        kingSlime.Reset();
         roundArea = Rectangle.Empty;
         bossArea = Rectangle.Empty;
     }

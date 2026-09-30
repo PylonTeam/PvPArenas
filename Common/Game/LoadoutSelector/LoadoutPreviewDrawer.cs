@@ -1,13 +1,16 @@
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using PvPArenas.Common.UI;
+using PvPArenas.Core.Configs;
 using PvPFramework.Core.Utilities;
 using System;
 using System.Collections.Generic;
 using Terraria;
+using Terraria.Audio;
 using Terraria.GameContent;
 using Terraria.GameInput;
 using Terraria.ID;
+using Terraria.Localization;
 using Terraria.ModLoader;
 using Terraria.ModLoader.Config;
 using Terraria.UI;
@@ -44,7 +47,7 @@ internal static class LoadoutPreviewDrawer
     private const int SlotSize = 36;
     private const int EquipmentPhysicsKeyOffset = 1000;
 
-    private const int HeaderHeight = 60;
+    private const int HeaderHeight = 76;
     private const int PreviewWidth = 96;
     private const int SidePadding = 14;
     private const int PreviewInventoryGap = 12;
@@ -68,16 +71,6 @@ internal static class LoadoutPreviewDrawer
     private const int PreviewJumpDuration = 32;
     private const float PreviewJumpHeight = 30f;
 
-    private static readonly Color PanelFill = new(45, 61, 132);
-    private static readonly Color PanelEdge = new(70, 89, 165);
-    private static readonly Color Yellow = new(246, 216, 72);
-
-    private static readonly Color RowFill = new(30, 43, 98);
-    private static readonly Color RowHover = new(68, 86, 158);
-    private static readonly Color DarkEdge = new(6, 12, 38);
-    private static readonly Color HoverEdge = new(244, 209, 74);
-    private static readonly Color Selected = new(104, 222, 72);
-
     private static Texture2D PanelBackground =>
         Main.Assets.Request<Texture2D>(
             "Images/UI/PanelBackground").Value;
@@ -86,10 +79,7 @@ internal static class LoadoutPreviewDrawer
         Main.Assets.Request<Texture2D>(
             "Images/UI/PanelBorder").Value;
 
-    private static Texture2D PlayerBack =>
-        Main.Assets.Request<Texture2D>(
-            "Images/UI/PlayerBackground").Value;
-
+    private static readonly RasterizerState ClipRasterizer = new() { CullMode = CullMode.None, ScissorTestEnable = true };
     private static readonly List<SlotEntry> inventorySlots = [];
     private static readonly List<SlotEntry> equipmentSlots = [];
 
@@ -99,6 +89,7 @@ internal static class LoadoutPreviewDrawer
     private static int cachedDisplayLoadoutIndex = -1;
     private static int cachedMaxHealth = 100;
     private static int cachedMaxMana = 20;
+    private static int layoutRows;
     private static bool cacheValid;
 
     private static int localLoadoutIndex;
@@ -107,42 +98,76 @@ internal static class LoadoutPreviewDrawer
     private static int previewJumpTicks;
     private static bool previewJumpWasDown;
 
-    private static UIEntranceAnimation entrance;
-    private static float alpha = 1f;
+    private static float openingAge, alpha;
+    private static float[] hoverAmounts = [], selectionAmounts = [];
+    private static readonly float[] slotHoverAmounts = new float[50 + EquipKinds.Length];
+    private static int hoveredSlot = -1;
+    private static bool editButtonHovered;
+    private static float editHoverAmount;
+
+    private static string Label(string key) => Language.GetTextValue("Mods.PvPArenas.LoadoutSelector." + key);
+
+    internal static void Update(float seconds)
+    {
+        RoundManager manager = ModContent.GetInstance<RoundManager>();
+        if (!manager.TryGetSelectedPreset(out BossFightPreset preset)) return;
+        int count = preset.Loadouts?.Count ?? 0;
+        if (hoverAmounts.Length != count)
+        {
+            hoverAmounts = new float[count];
+            selectionAmounts = new float[count];
+            layoutRows = 0;
+        }
+
+        openingAge += Math.Max(0f, seconds);
+        alpha = ArenaUIStyle.Ease(Math.Clamp(openingAge / .2f, 0f, 1f));
+        float blend = ArenaUIStyle.HoverBlend(seconds);
+        int selected = NormalizeLoadoutIndex(preset, Main.LocalPlayer.GetModPlayer<ArenaPlayer>().SelectedLoadoutIndex);
+        for (int i = 0; i < count; i++)
+        {
+            hoverAmounts[i] = MathHelper.Lerp(hoverAmounts[i], hoveredLoadoutIndex == i && !editMode ? 1f : 0f, blend);
+            selectionAmounts[i] = MathHelper.Lerp(selectionAmounts[i], selected == i ? 1f : 0f, blend);
+        }
+        editHoverAmount = MathHelper.Lerp(editHoverAmount, editButtonHovered ? 1f : 0f, blend);
+        for (int i = 0; i < slotHoverAmounts.Length; i++)
+            slotHoverAmounts[i] = MathHelper.Lerp(slotHoverAmounts[i], hoveredSlot == i ? 1f : 0f, blend);
+    }
+
+    internal static void Reset()
+    {
+        StopEditing(save: false);
+        SandboxLoadoutEditor.Close();
+        currentPreset = null;
+        cachedPresetIndex = cachedDisplayLoadoutIndex = hoveredLoadoutIndex = hoveredSlot = -1;
+        cacheValid = false;
+        previewPlayer = null;
+        layoutRows = 0;
+        previewJumpTicks = 0;
+        previewJumpWasDown = editButtonHovered = false;
+        openingAge = alpha = editHoverAmount = 0f;
+        Array.Clear(hoverAmounts);
+        Array.Clear(selectionAmounts);
+        Array.Clear(slotHoverAmounts);
+    }
 
     private static int DisplayLoadoutIndex =>
         hoveredLoadoutIndex >= 0
             ? hoveredLoadoutIndex
             : localLoadoutIndex;
 
-    private static int InventoryRowCount =>
-        Math.Max(
-            1,
-            (inventorySlots.Count + InventoryColumns - 1)
-            / InventoryColumns);
-
-    // Equipment always lays out in a fixed 3-row grid (armor | accessories |
-    // accessories + gap | hook & mount), independent of how many inventory rows
-    // the loadout happens to fill.
-    private static int EquipmentColumnCount
+    private static int GetGridRowCount(BossFightPreset preset)
     {
-        get
+        // Every choice uses the same geometry, so previews cannot move their own hitboxes.
+        if (layoutRows > 0) return layoutRows;
+        int rows = preset.IsSandbox() ? 5 : EquipmentRows;
+        for (int i = 0; i < (preset.Loadouts?.Count ?? 0); i++)
         {
-            if (equipmentSlots.Count == 0)
-                return 0;
-
-            return (
-                equipmentSlots.Count
-                + EquipmentRows
-                - 1)
-                / EquipmentRows;
+            Loadout loadout = ArenaPlayer.ResolveBaseLoadout(preset, i);
+            int slots = Math.Clamp(loadout.Inventory?.Count ?? 0, 10, 50);
+            rows = Math.Max(rows, (slots + InventoryColumns - 1) / InventoryColumns);
         }
+        return layoutRows = rows;
     }
-
-    private static int GridRowCount =>
-        Math.Max(
-            InventoryRowCount,
-            equipmentSlots.Count > 0 ? EquipmentRows : 0);
 
     public static void Draw(int top)
     {
@@ -159,11 +184,11 @@ internal static class LoadoutPreviewDrawer
         int optionCount = preset.Loadouts?.Count ?? 0;
         bool showSelector = optionCount > 1;
 
-        Point mouse = new(Main.mouseX, Main.mouseY);
-
-        entrance.Advance();
-        alpha = entrance.Alpha;
-        top -= entrance.SlideOffset;
+        Point mouse = PlayerInput.IgnoreMouseInterface || alpha < .95f
+            ? new Point(int.MinValue, int.MinValue)
+            : new Point(Main.mouseX, Main.mouseY);
+        editButtonHovered = false;
+        hoveredSlot = -1;
 
         // While picking an item, the whole loadout body is replaced by the picker.
         if (preset.IsSandbox() && SandboxLoadoutEditor.IsOpen)
@@ -183,6 +208,7 @@ internal static class LoadoutPreviewDrawer
         if (manager.SelectedPresetIndex != cachedPresetIndex)
         {
             StopEditing(save: false);
+            layoutRows = 0;
 
             localLoadoutIndex = playerSelectedIndex;
             hoveredLoadoutIndex = -1;
@@ -201,205 +227,171 @@ internal static class LoadoutPreviewDrawer
         if (!showSelector)
             hoveredLoadoutIndex = -1;
 
-        Rectangle panel = Rectangle.Empty;
-        float scale = 1f;
+        int gridRows = GetGridRowCount(preset);
+        int designWidth = GetDesignWidth((EquipKinds.Length + EquipmentRows - 1) / EquipmentRows);
+        int designHeight = GetDesignHeight(optionCount, gridRows);
+        float scale = CalculateScale(top, designWidth, designHeight);
+        int S(float value) => Math.Max(1, (int)MathF.Round(value * scale));
+        Rectangle panel = new((Main.screenWidth - S(designWidth)) / 2, top, S(designWidth), S(designHeight));
 
-        int S(float value) =>
-            Math.Max(
-                1,
-                (int)MathF.Round(value * scale));
+        hoveredLoadoutIndex = !editMode && showSelector
+            ? GetHoveredLoadoutIndex(preset, panel, panel.Y + S(HeaderHeight), S, mouse)
+            : -1;
+        EnsureRebuilt(manager.SelectedPresetIndex, preset);
 
-        // Hovering can switch to a loadout with a different inventory size.
-        // Recalculate until the panel and hover result agree.
-        for (int pass = 0; pass < 3; pass++)
+        // Reveal from the center with voting's timing; preserve clipping through the player renderer.
+        GraphicsDevice device = Main.spriteBatch.GraphicsDevice;
+        Rectangle oldClip = device.ScissorRectangle;
+        RasterizerState oldRasterizer = device.RasterizerState;
+        BlendState oldBlend = device.BlendState;
+        SamplerState oldSampler = device.SamplerStates[0];
+        int revealHeight = Math.Max(1, (int)MathF.Round(panel.Height * alpha));
+        Rectangle clip = new(panel.X, panel.Center.Y - revealHeight / 2, panel.Width, revealHeight);
+        Vector2 first = Vector2.Transform(clip.TopLeft(), Main.UIScaleMatrix);
+        Vector2 last = Vector2.Transform(clip.BottomRight(), Main.UIScaleMatrix);
+        Rectangle screenClip = new((int)first.X, (int)first.Y,
+            Math.Max(1, (int)(last.X - first.X)), Math.Max(1, (int)(last.Y - first.Y)));
+        Main.spriteBatch.End();
+        Main.spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp,
+            DepthStencilState.None, ClipRasterizer, null, Main.UIScaleMatrix);
+        device.ScissorRectangle = Rectangle.Intersect(oldRasterizer.ScissorTestEnable ? oldClip : device.Viewport.Bounds, screenClip);
+        try
         {
-            EnsureRebuilt(
-                manager.SelectedPresetIndex,
-                preset);
+            DrawPanel(
+                panel,
+                ArenaUIStyle.PanelFill,
+                ArenaUIStyle.PanelEdge,
+                S(10));
 
-            int inventoryRows = InventoryRowCount;
-            int equipmentColumns = EquipmentColumnCount;
+            string title = Label("Header");
+            Utils.DrawBorderStringBig(
+                Main.spriteBatch,
+                title,
+                new Vector2(
+                    panel.Center.X,
+                    panel.Y + S(4)),
+                ArenaUIStyle.Title * alpha,
+                Math.Min(.63f * scale, (panel.Width - S(28)) / Math.Max(1f, FontAssets.DeathText.Value.MeasureString(title).X)),
+                .5f,
+                0f);
 
-            int designWidth = GetDesignWidth(
-                equipmentColumns);
+            string bossName =
+                preset.IsSandbox()
+                    ? Label("Sandbox")
+                    : Lang.GetNPCNameValue(
+                        preset.Boss?.Type ?? NPCID.None);
 
-            int designHeight = GetDesignHeight(
-                optionCount,
-                inventoryRows);
+            Text(
+                bossName,
+                new Vector2(
+                    panel.X + S(15),
+                    panel.Y + S(38)),
+                Color.White,
+                .94f * scale,
+                panel.Width - S(110), 0f);
 
-            scale = CalculateScale(
-                top,
-                designWidth,
-                designHeight);
+            int seconds = Math.Max(0, (manager.RemainingTicks + 59) / 60);
+            Text($"{seconds / 60}:{seconds % 60:00}", new Vector2(panel.Right - S(15), panel.Y + S(40)),
+                Color.Silver, .7f * scale, S(76), 1f);
+            Rectangle track = new(panel.X + S(15), panel.Y + S(64), panel.Width - S(30), S(3));
+            float progress = Math.Clamp(manager.RemainingTicks /
+                (60f * Math.Max(1, ModContent.GetInstance<ServerConfig>().FreezeCountdownSeconds)), 0f, 1f);
+            Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value, track, Color.Black * (.3f * alpha));
+            Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value,
+                new Rectangle(track.X, track.Y, (int)(track.Width * progress), track.Height), ArenaUIStyle.Progress * alpha);
 
-            panel = new Rectangle(
-                (Main.screenWidth - S(designWidth)) / 2,
-                top,
-                S(designWidth),
-                S(designHeight));
+            if (!PlayerInput.IgnoreMouseInterface && panel.Contains(Main.mouseX, Main.mouseY))
+                Main.LocalPlayer.mouseInterface = true;
 
-            int newHoveredIndex = !editMode && showSelector
-                ? GetHoveredLoadoutIndex(
+            int contentTop =
+                panel.Y + S(HeaderHeight);
+
+            if (showSelector)
+            {
+                DrawLoadoutCards(
                     preset,
                     panel,
-                    panel.Y + S(HeaderHeight),
+                    contentTop,
                     S,
-                    mouse)
-                : -1;
+                    scale,
+                    mouse);
 
-            if (newHoveredIndex == hoveredLoadoutIndex)
-                break;
+                contentTop +=
+                    S(GetLoadoutSelectorHeight(optionCount));
+            }
 
-            hoveredLoadoutIndex = newHoveredIndex;
-            InvalidateCache();
-        }
+            int gridHeight =
+                gridRows * S(SlotStep);
 
-        EnsureRebuilt(
-            manager.SelectedPresetIndex,
-            preset);
-
-        int finalInventoryRows = InventoryRowCount;
-        int finalEquipmentColumns = EquipmentColumnCount;
-
-        int finalDesignWidth =
-            GetDesignWidth(finalEquipmentColumns);
-
-        int finalDesignHeight =
-            GetDesignHeight(
-                optionCount,
-                finalInventoryRows);
-
-        scale = CalculateScale(
-            top,
-            finalDesignWidth,
-            finalDesignHeight);
-
-        panel = new Rectangle(
-            (Main.screenWidth - S(finalDesignWidth)) / 2,
-            top,
-            S(finalDesignWidth),
-            S(finalDesignHeight));
-
-        DrawPanel(
-            panel,
-            PanelFill,
-            PanelEdge,
-            S(9));
-
-        Utils.DrawBorderStringBig(
-            Main.spriteBatch,
-            "Loadout",
-            new Vector2(
-                panel.Center.X,
-                panel.Y + S(4)),
-            Yellow * alpha,
-            .62f * scale,
-            .5f,
-            0f);
-
-        string bossName =
-            preset.IsSandbox()
-                ? "Sandbox"
-                : Lang.GetNPCNameValue(
-                    preset.Boss?.Type ?? NPCID.None);
-
-        string subtitle = showSelector
-            ? $"Pick your loadout for {bossName}!"
-            : $"Your loadout for {bossName}!";
-
-        Text(
-            subtitle,
-            new Vector2(
-                panel.Center.X,
-                panel.Y + S(36)),
-            Color.White,
-            .84f * scale,
-            panel.Width - S(30));
-
-        if (panel.Contains(mouse))
-            Main.LocalPlayer.mouseInterface = true;
-
-        int contentTop =
-            panel.Y + S(HeaderHeight);
-
-        if (showSelector)
-        {
-            DrawLoadoutCards(
-                preset,
-                panel,
+            Rectangle previewBox = new(
+                panel.X + S(SidePadding),
                 contentTop,
-                S,
-                scale,
+                S(PreviewWidth),
+                gridHeight);
+
+            DrawPreviewBox(
+                previewBox,
                 mouse);
 
-            contentTop +=
-                S(GetLoadoutSelectorHeight(optionCount));
-        }
+            DrawLoadoutStats(previewBox, scale, S);
 
-        int gridHeight =
-            GridRowCount * S(SlotStep);
+            int inventoryOriginX =
+                previewBox.Right
+                + S(PreviewInventoryGap);
 
-        Rectangle previewBox = new(
-            panel.X + S(SidePadding),
-            contentTop,
-            S(PreviewWidth),
-            gridHeight);
-
-        DrawPreviewBox(
-            previewBox,
-            mouse);
-
-        DrawLoadoutStats(previewBox, scale, S);
-
-        int inventoryOriginX =
-            previewBox.Right
-            + S(PreviewInventoryGap);
-
-        DrawInventorySlots(
-            inventoryOriginX,
-            contentTop,
-            scale,
-            mouse,
-            S);
-
-        if (equipmentSlots.Count > 0)
-        {
-            int equipmentOriginX =
-                inventoryOriginX
-                + InventoryColumns * S(SlotStep)
-                + S(InventoryEquipmentGap);
-
-            DrawEquipmentSlots(
-                equipmentOriginX,
+            DrawInventorySlots(
+                inventoryOriginX,
                 contentTop,
-                EquipmentRows,
                 scale,
                 mouse,
                 S);
-        }
 
-        // Edit loadout button. Sandbox loadouts are edited directly by clicking
-        // slots, so they skip the reorder-style edit button entirely.
-        if (!preset.IsSandbox())
+            if (equipmentSlots.Count > 0)
+            {
+                int equipmentOriginX =
+                    inventoryOriginX
+                    + InventoryColumns * S(SlotStep)
+                    + S(InventoryEquipmentGap);
+
+                DrawEquipmentSlots(
+                    equipmentOriginX,
+                    contentTop,
+                    EquipmentRows,
+                    scale,
+                    mouse,
+                    S);
+            }
+
+            // Edit loadout button. Sandbox loadouts are edited directly by clicking
+            // slots, so they skip the reorder-style edit button entirely.
+            if (!preset.IsSandbox())
+            {
+                int gridBottom =
+                    contentTop +
+                    gridRows * S(SlotStep);
+
+                Rectangle editButton = new(
+                    panel.Center.X - S(82),
+                    gridBottom + S(7),
+                    S(164),
+                    S(28));
+
+                DrawEditButton(
+                    editButton,
+                    preset,
+                    scale,
+                    mouse,
+                    S);
+            }
+        }
+        finally
         {
-            int gridBottom =
-                contentTop +
-                GridRowCount * S(SlotStep);
-
-            Rectangle editButton = new(
-                panel.Center.X - S(82),
-                gridBottom + S(7),
-                S(164),
-                S(28));
-
-            DrawEditButton(
-                editButton,
-                preset,
-                scale,
-                mouse,
-                S);
+            Main.spriteBatch.End();
+            Main.spriteBatch.Begin(SpriteSortMode.Deferred, oldBlend, oldSampler,
+                DepthStencilState.None, oldRasterizer, null, Main.UIScaleMatrix);
+            device.ScissorRectangle = oldClip;
         }
-
+        // Cursor items must remain visible when dragged beyond the panel.
         DrawHeldItem(scale);
     }
 
@@ -410,24 +402,20 @@ internal static class LoadoutPreviewDrawer
     Point mouse,
     Func<float, int> S)
     {
-        bool hovered = button.Contains(mouse);
+        bool hovered = editButtonHovered = button.Contains(mouse);
 
         DrawPanel(
             button,
-            hovered ? RowHover : RowFill,
-            editMode
-                ? Selected
-                : hovered
-                    ? HoverEdge
-                    : DarkEdge,
+            ArenaUIStyle.ChoiceFill(editHoverAmount, editMode ? 1f : 0f),
+            Color.Transparent,
             S(8));
 
         Text(
-            editMode ? "Done" : "Edit Loadout",
+            Label(editMode ? "Done" : "ArrangeItems"),
             new Vector2(
                 button.Center.X,
                 button.Y + S(6)),
-            editMode ? new Color(206, 255, 142) : Color.White,
+            editMode ? ArenaUIStyle.Accent : Color.White,
             .78f * scale,
             button.Width - S(12));
 
@@ -440,6 +428,7 @@ internal static class LoadoutPreviewDrawer
             return;
 
         Main.mouseLeftRelease = false;
+        SoundEngine.PlaySound(SoundID.MenuTick);
 
         if (editMode)
             StopEditing(save: true);
@@ -688,7 +677,7 @@ internal static class LoadoutPreviewDrawer
     {
         return HeaderHeight
             + GetLoadoutSelectorHeight(optionCount)
-            + Math.Max(inventoryRows, equipmentSlots.Count > 0 ? EquipmentRows : 0) * SlotStep
+            + inventoryRows * SlotStep
             + SidePadding
             + EditButtonAreaHeight; // Extra space for the edit loadout button
     }
@@ -841,23 +830,12 @@ internal static class LoadoutPreviewDrawer
             bool selected =
                 localLoadoutIndex == i;
 
-            Color fill =
-                hovered && !selected
-                    ? RowHover
-                    : RowFill;
-
-            Color edge =
-                selected
-                    ? Selected
-                    : hovered
-                        ? HoverEdge
-                        : DarkEdge;
-
-            DrawPanel(
-                card,
-                fill,
-                edge,
-                S(12));
+            float hover = i < hoverAmounts.Length ? hoverAmounts[i] : 0f;
+            float selection = i < selectionAmounts.Length ? selectionAmounts[i] : selected ? 1f : 0f;
+            DrawPanel(card, ArenaUIStyle.ChoiceFill(hover, selection), Color.Transparent, S(8));
+            Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value,
+                new Rectangle(card.X + S(10), card.Bottom - S(5), card.Width - S(20), S(2)),
+                ArenaUIStyle.Accent * (selection * alpha));
 
             if (hovered)
             {
@@ -869,6 +847,7 @@ internal static class LoadoutPreviewDrawer
                     !selected)
                 {
                     Main.mouseLeftRelease = false;
+                    SoundEngine.PlaySound(SoundID.MenuTick);
 
                     localLoadoutIndex = i;
 
@@ -883,12 +862,6 @@ internal static class LoadoutPreviewDrawer
                 card.Y + S(5),
                 S(32),
                 S(32));
-
-            DrawPanel(
-                iconBox,
-                new Color(34, 49, 111),
-                DarkEdge,
-                S(5));
 
             Item icon =
                 MakeItem(GetLoadoutIconType(option));
@@ -907,15 +880,10 @@ internal static class LoadoutPreviewDrawer
 
             string name =
                 string.IsNullOrWhiteSpace(option?.Name)
-                    ? $"Loadout {i + 1}"
+                    ? Language.GetTextValue("Mods.PvPArenas.LoadoutSelector.UnnamedLoadout", i + 1)
                     : option.Name;
 
-            Color nameColor =
-                selected
-                    ? new Color(206, 255, 142)
-                    : hovered
-                        ? Yellow
-                        : Color.White;
+            Color nameColor = Color.Lerp(Color.White, ArenaUIStyle.Accent, selection);
 
             Text(
                 name,
@@ -1251,18 +1219,7 @@ internal static class LoadoutPreviewDrawer
         SpriteBatch spriteBatch =
             Main.spriteBatch;
 
-        Utils.DrawSplicedPanel(
-            spriteBatch,
-            PlayerBack,
-            box.X,
-            box.Y,
-            box.Width,
-            box.Height,
-            12,
-            12,
-            12,
-            12,
-            Color.White * alpha);
+        DrawPanel(box, ArenaUIStyle.CardFill, Color.Transparent, 8);
 
         if (previewPlayer == null)
             return;
@@ -1490,26 +1447,10 @@ internal static class LoadoutPreviewDrawer
         Point mouse,
         int physicsKey)
     {
-        Texture2D background =
-            (entry.Equip
-                ? TextureAssets.InventoryBack3
-                : TextureAssets.InventoryBack)
-            .Value;
-
-        float backgroundScale =
-            cell.Width
-            / (float)background.Width;
-
-        Main.spriteBatch.Draw(
-            background,
-            cell.Center.ToVector2(),
-            null,
-            Color.White * alpha,
-            0f,
-            background.Size() / 2f,
-            backgroundScale,
-            SpriteEffects.None,
-            0f);
+        int hoverKey = physicsKey >= EquipmentPhysicsKeyOffset ? 50 + physicsKey - EquipmentPhysicsKeyOffset : physicsKey;
+        if (cell.Contains(mouse)) hoveredSlot = hoverKey;
+        DrawPanel(cell, ArenaUIStyle.ChoiceFill(slotHoverAmounts[hoverKey], 0f), Color.Transparent,
+            Math.Max(2, (int)MathF.Round(6f * uiScale)));
 
         if (!entry.Item.IsAir)
         {
@@ -1614,7 +1555,7 @@ internal static class LoadoutPreviewDrawer
         Main.spriteBatch.Draw(
             TextureAssets.MagicPixel.Value,
             strip,
-            new Color(8, 12, 28) * (.72f * alpha));
+            ArenaUIStyle.PanelFill * (.85f * alpha));
 
         int half = strip.Width / 2;
         DrawStat(
@@ -1708,7 +1649,8 @@ internal static class LoadoutPreviewDrawer
         Vector2 position,
         Color color,
         float scale,
-        float maxWidth)
+        float maxWidth,
+        float anchor = .5f)
     {
         float width =
             FontAssets.MouseText.Value
@@ -1724,7 +1666,7 @@ internal static class LoadoutPreviewDrawer
             position,
             color * alpha,
             scale,
-            .5f);
+            anchor);
     }
 
     private static void InvalidateCache()
@@ -1733,5 +1675,9 @@ internal static class LoadoutPreviewDrawer
     }
 
     /// <summary>Forces the next draw to rebuild cached slots (used after a sandbox slot changes).</summary>
-    internal static void Invalidate() => InvalidateCache();
+    internal static void Invalidate()
+    {
+        layoutRows = 0;
+        InvalidateCache();
+    }
 }
