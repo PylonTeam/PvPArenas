@@ -53,9 +53,6 @@ internal sealed class ServerConfig : ModConfig
     }
 
     [Header("Voting")]
-    [DefaultValue(true)]
-    public bool EndVotingWhenEveryoneVoted = true;
-
     [DefaultValue(30), Range(5, 300)]
     public int VotingDurationSeconds = 30;
 

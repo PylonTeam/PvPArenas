@@ -10,4 +10,12 @@ dotnet run --project Tests/ArenaVoting -- "D:\Steam\steamapps\common\tModLoader"
 
 The referenced ErkySSC, PvPFramework, and Pylon Release assemblies must already be built.
 Coverage includes config migration and round trips, fixed boss identities, per-fight stats,
-ballot validation and synchronization, winner selection, and presentation lifetime.
+ballot validation and synchronization, full-duration voting (including single-player),
+winner selection, presentation lifetime, and retaining the voted boss when arena preparation fails.
+
+To verify the localization keys in the packaged mod using tModLoader's own loader:
+
+```powershell
+dotnet build PvPArenas.csproj -c Release
+dotnet run --project Tests/ArenaVoting -- "D:\Steam\steamapps\common\tModLoader" ".." --localization
+```

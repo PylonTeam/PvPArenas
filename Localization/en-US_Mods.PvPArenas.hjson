@@ -6,6 +6,11 @@ Voting: {
 	Selected: Selected
 }
 
+Round: {
+    PreparationFailedStatus: Arena setup failed
+    PreparationFailed: "Arena setup failed: {0} The selected boss has been kept. Fix the arena, then use Start Round in Arena Game Manager to retry, or Start Voting to choose again."
+}
+
 Configs: {
 	ServerConfig: {
 		DisplayName: Server Config
@@ -49,12 +54,7 @@ Configs: {
 
 		VotingDurationSeconds: {
 			Label: Voting Duration (seconds)
-			Tooltip: Maximum voting time after the results screen closes. Most votes wins; ties and empty ballots choose randomly.
-		}
-
-		EndVotingWhenEveryoneVoted: {
-			Label: End When Everyone Has Voted
-			Tooltip: Finish as soon as every active player has voted, like ErkySSC. Disable to always wait for the timer.
+			Tooltip: Voting stays open for this full duration after the results screen closes, even when everyone has voted. Most votes wins; ties and empty ballots choose randomly.
 		}
 
 		ResultsDurationSeconds: {

@@ -8,10 +8,12 @@ using PvPFramework.Common.EndScreen;
 using System;
 using System.IO;
 using System.Linq;
+using Terraria.Chat;
 using Terraria.Enums;
 using Terraria.GameContent.Creative;
 using Terraria.GameContent.NetModules;
 using Terraria.ID;
+using Terraria.Localization;
 using Terraria.Net;
 
 namespace PvPArenas.Common.Game;
@@ -46,7 +48,6 @@ internal sealed class RoundManager : ModSystem
         TimeExpired,
         BossDespawned,
         SpawnFailed,
-        ArenaUnavailable,
         NoPlayers,
         AdminEnded
     }
@@ -56,6 +57,7 @@ internal sealed class RoundManager : ModSystem
     private bool timerPaused;
     private bool idleHeld;
     private bool showingResults;
+    private string preparationFailure = "";
     private int selectedPresetIndex = -1;
     private ArenaLayout currentLayout;
 
@@ -68,6 +70,7 @@ internal sealed class RoundManager : ModSystem
     internal int RemainingTicks => remainingTicks;
     internal bool IsTimerPaused => timerPaused;
     internal bool IsIdleHeld => idleHeld;
+    internal string PreparationFailure => preparationFailure;
     internal bool IsShowingResults => currentPhase == RoundPhase.VotingOrEndScreen && showingResults;
     internal bool IsVoting => currentPhase == RoundPhase.VotingOrEndScreen && !showingResults
         && ModContent.GetInstance<BossVoteSystem>().Active;
@@ -121,14 +124,6 @@ internal sealed class RoundManager : ModSystem
                 FinishRound(RoundEndReason.BossDespawned);
                 return;
             }
-        }
-
-        if (!timerPaused && IsVoting
-            && ModContent.GetInstance<ServerConfig>().EndVotingWhenEveryoneVoted
-            && ModContent.GetInstance<BossVoteSystem>().AllPlayersVoted)
-        {
-            FinishVoting();
-            return;
         }
 
         if (timerPaused || remainingTicks <= 0)
@@ -259,6 +254,7 @@ internal sealed class RoundManager : ModSystem
                 pendingWinningPlayer = -1;
                 idleHeld = true;
                 showingResults = false;
+                preparationFailure = "";
                 ModContent.GetInstance<BossVoteSystem>().Reset();
                 selectedPresetIndex = -1;
                 currentLayout = null;
@@ -276,6 +272,8 @@ internal sealed class RoundManager : ModSystem
 
     private void StartIntermission(bool presentResults = false)
     {
+        preparationFailure = "";
+        currentLayout = null;
         ArenaPlayer.ReleaseAll();
         TeamBalancer.AssignUnassignedPlayers();
         if (!TeamBalancer.AllActivePlayersAssigned())
@@ -313,6 +311,7 @@ internal sealed class RoundManager : ModSystem
     {
         EndScreenService.Hide();
 
+        preparationFailure = "";
         showingResults = false;
         int votedPreset = ModContent.GetInstance<BossVoteSystem>().Complete();
         if (votedPreset >= 0)
@@ -320,8 +319,7 @@ internal sealed class RoundManager : ModSystem
 
         if (!TryGetSelectedPreset(out BossFightPreset preset))
         {
-            Log.Warn("[M2-Prepare] No playable boss preset is configured; retrying after the intermission.");
-            StartIntermission();
+            HoldPreparationFailure("No playable boss preset is configured.");
             return;
         }
 
@@ -330,16 +328,14 @@ internal sealed class RoundManager : ModSystem
             .ToArray();
         if (participants.Length == 0)
         {
-            Log.Warn("[M2-Prepare] No active Red or Blue players were available after automatic assignment.");
-            StartIntermission();
+            HoldPreparationFailure("No active Red or Blue players were available after automatic assignment.");
             return;
         }
 
         SetPhase(RoundPhase.Generating, 0);
         if (!ArenaGeneration.TryResolve(preset, out ArenaLayout layout, out string failure))
         {
-            Log.Warn($"[M2-Prepare] Existing-terrain arena resolution failed: {failure}");
-            FinishRound(RoundEndReason.ArenaUnavailable);
+            HoldPreparationFailure(failure);
             return;
         }
 
@@ -356,6 +352,23 @@ internal sealed class RoundManager : ModSystem
         }
 
         SetPhase(RoundPhase.FreezeCountdown, SecondsToTicks(countdownSeconds));
+    }
+
+    private void HoldPreparationFailure(string failure)
+    {
+        // Keep the completed ballot so Start Round retries its winner instead of rolling another boss.
+        preparationFailure = failure;
+        currentLayout = null;
+        showingResults = false;
+        idleHeld = true;
+        Log.Warn($"[M2-Prepare] {failure} Holding the selected boss until setup is retried.");
+        SetPhase(RoundPhase.WaitingForPlayers, 0);
+
+        const string key = "Mods.PvPArenas.Round.PreparationFailed";
+        if (Main.netMode == NetmodeID.Server)
+            ChatHelper.BroadcastChatMessage(NetworkText.FromKey(key, failure), Color.OrangeRed);
+        else if (!Main.dedServ)
+            Main.NewText(Language.GetTextValue(key, failure), Color.OrangeRed);
     }
 
     internal static void SendArenaSections(Player player, ArenaLayout layout)
@@ -417,10 +430,17 @@ internal sealed class RoundManager : ModSystem
         {
             EndScreenService.Hide();
             showingResults = false;
+            preparationFailure = "";
             ModContent.GetInstance<BossVoteSystem>().Reset();
             selectedPresetIndex = -1;
             currentLayout = null;
             SetPhase(RoundPhase.WaitingForPlayers, 0);
+            return;
+        }
+
+        if (reason == RoundEndReason.SpawnFailed)
+        {
+            HoldPreparationFailure("The selected boss could not be spawned.");
             return;
         }
 
@@ -558,6 +578,7 @@ internal sealed class RoundManager : ModSystem
         timerPaused = false;
         idleHeld = false;
         showingResults = false;
+        preparationFailure = "";
         selectedPresetIndex = -1;
         currentLayout = null;
         pendingWinningTeam = Team.None;
@@ -575,6 +596,7 @@ internal sealed class RoundManager : ModSystem
         timerPaused = false;
         idleHeld = false;
         showingResults = false;
+        preparationFailure = "";
         selectedPresetIndex = -1;
         currentLayout = null;
     }
@@ -586,6 +608,7 @@ internal sealed class RoundManager : ModSystem
         writer.Write(timerPaused);
         writer.Write(idleHeld);
         writer.Write(showingResults);
+        writer.Write(preparationFailure);
         writer.Write(selectedPresetIndex);
         writer.Write(currentLayout != null);
         currentLayout?.Write(writer);
@@ -600,6 +623,7 @@ internal sealed class RoundManager : ModSystem
         timerPaused = reader.ReadBoolean();
         idleHeld = reader.ReadBoolean();
         showingResults = reader.ReadBoolean();
+        preparationFailure = reader.ReadString();
         selectedPresetIndex = reader.ReadInt32();
         currentLayout = reader.ReadBoolean() ? ArenaLayout.Read(reader) : null;
         AnnouncePhaseChange(oldPhase, currentPhase, wasIdleHeld, idleHeld, SelectedBossType);

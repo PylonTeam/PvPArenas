@@ -6,6 +6,7 @@ using System.Linq;
 using Terraria.GameContent;
 using Terraria.Enums;
 using Terraria.UI;
+using Terraria.Localization;
 using PvPArenas.Common.Game.BossVoting;
 
 namespace PvPArenas.Common.Game.Score;
@@ -115,7 +116,9 @@ internal sealed class ScorelineUISystem : ModSystem
         if (panel.Contains(Main.MouseScreen.ToPoint()))
         {
             Main.LocalPlayer.mouseInterface = true;
-            Main.instance.MouseText("Arenas round status");
+            Main.instance.MouseText(string.IsNullOrEmpty(manager.PreparationFailure)
+                ? "Arenas round status"
+                : Language.GetTextValue("Mods.PvPArenas.Round.PreparationFailed", manager.PreparationFailure));
         }
 
         return true;
@@ -129,6 +132,8 @@ internal sealed class ScorelineUISystem : ModSystem
 
         return manager.CurrentPhase switch
         {
+            RoundManager.RoundPhase.WaitingForPlayers when !string.IsNullOrEmpty(manager.PreparationFailure)
+                => Language.GetTextValue("Mods.PvPArenas.Round.PreparationFailedStatus"),
             RoundManager.RoundPhase.WaitingForPlayers => manager.IsIdleHeld ? "Waiting" : "Waiting for players",
             RoundManager.RoundPhase.VotingOrEndScreen when manager.IsShowingResults => $"Results {FormatTime(manager.RemainingTicks)}",
             RoundManager.RoundPhase.VotingOrEndScreen when manager.IsVoting => $"Boss vote {FormatTime(manager.RemainingTicks)}",

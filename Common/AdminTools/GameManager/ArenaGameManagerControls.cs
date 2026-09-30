@@ -9,6 +9,7 @@ using Terraria.Enums;
 using Terraria.GameContent;
 using Terraria.GameContent.UI.Elements;
 using Terraria.ID;
+using Terraria.Localization;
 using Terraria.UI;
 
 namespace PvPArenas.Common.AdminTools.GameManager;
@@ -30,6 +31,13 @@ internal sealed class ArenaGameStatusPanel : UIPanel
         string phase = manager.CurrentPhase == RoundManager.RoundPhase.WaitingForPlayers && manager.IsIdleHeld
             ? "Waiting"
             : PhaseName(manager.CurrentPhase);
+        if (!string.IsNullOrEmpty(manager.PreparationFailure))
+        {
+            phase = Language.GetTextValue("Mods.PvPArenas.Round.PreparationFailedStatus");
+            if (new Rectangle(panel.X, panel.Y, panel.Width, 32).Contains(Main.MouseScreen.ToPoint()))
+                Main.instance.MouseText(Language.GetTextValue(
+                    "Mods.PvPArenas.Round.PreparationFailed", manager.PreparationFailure));
+        }
         if (manager.IsTimerPaused)
             phase += " (paused)";
 

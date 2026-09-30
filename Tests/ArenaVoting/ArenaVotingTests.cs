@@ -5,6 +5,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Terraria;
 using Terraria.ID;
+using Terraria.GameContent.Creative;
 using Terraria.ModLoader;
 using Terraria.ModLoader.Config;
 using Terraria.Utilities;
@@ -30,8 +31,10 @@ internal static class ArenaVotingTests
     public static void Run(Assembly arenas)
     {
         Main.netMode = NetmodeID.SinglePlayer;
+        Main.dedServ = true;
         Main.myPlayer = 0;
         Main.rand = new UnifiedRandom(42);
+        CreativePowerManager.Initialize();
         Type configType = arenas.GetType("PvPArenas.Core.Configs.ServerConfig", true)!;
         Type roundType = arenas.GetType("PvPArenas.Common.Game.RoundManager", true)!;
         Type voteType = arenas.GetType("PvPArenas.Common.Game.BossVoting.BossVoteSystem", true)!;
@@ -58,6 +61,10 @@ internal static class ArenaVotingTests
         Check("config serializes named fights without editable boss IDs or list", saved["FightPresets"] == null
             && saved["KingSlime"] is JObject && saved["KingSlime"]!["Boss"] == null
             && saved["KingSlime"]!["ArenaKind"] == null);
+        Check("the obsolete early-finish setting is ignored when loading old configs",
+            configType.GetField("EndVotingWhenEveryoneVoted", All) == null
+            && Write(Read(new JObject { ["EndVotingWhenEveryoneVoted"] = true }))
+                ["EndVotingWhenEveryoneVoted"] == null);
         object roundTrip = Read(saved);
         Check("config round trip preserves all tier defaults", Enumerable.Range(0, 4).All(i =>
             Health(roundTrip, i) == Health(config, i) && Mana(roundTrip, i) == Mana(config, i)
@@ -117,6 +124,10 @@ internal static class ArenaVotingTests
         Register(config);
         object round = Activator.CreateInstance(roundType, true)!;
         Register(round);
+        object integration = Activator.CreateInstance(arenas.GetType(
+            "PvPArenas.Common.Game.ArenaSpawnBoxIntegration", true)!, true)!;
+        Set(integration, "registered", true);
+        Register(integration);
         FieldInfo phase = roundType.GetField("currentPhase", All)!;
         phase.SetValue(round, Enum.Parse(phase.FieldType, "VotingOrEndScreen"));
         ModSystem vote = (ModSystem)Activator.CreateInstance(voteType, true)!;
@@ -126,9 +137,16 @@ internal static class ArenaVotingTests
         Call(vote, "Start", 1800);
         uint id = (uint)Get(vote, "BallotId");
         Call(vote, "CastVote", 0, id, 2);
-        Check("one vote cannot end a ballot with another active player", !(bool)Get(vote, "AllPlayersVoted"));
         Call(vote, "CastVote", 1, id, 2);
-        Check("all players voting enables ErkySSC-style early completion", (bool)Get(vote, "AllPlayersVoted"));
+        Set(round, "remainingTicks", 1800);
+        ((ModSystem)round).PostUpdateEverything();
+        Check("all players voting cannot complete early", (bool)Get(vote, "Active")
+            && (int)Get(round, "RemainingTicks") == 1799);
+        for (int tick = 0; tick < 1798; tick++)
+            ((ModSystem)round).PostUpdateEverything();
+        Check("all players voting still waits for the full timer",
+            (bool)Get(vote, "Active") && (int)Get(vote, "Winner") == -1
+            && (int)Get(round, "RemainingTicks") == 1 && (uint)Get(vote, "BallotId") == id);
         Check("active players can vote for a fixed boss", (int)Call(vote, "VoteCount", 2) == 2);
         Call(vote, "CastVote", 0, id, 0);
         Check("changing a choice moves one vote", (int)Call(vote, "VoteCount", 2) == 1
@@ -144,7 +162,16 @@ internal static class ArenaVotingTests
         Main.player[1].active = false;
         vote.PostUpdatePlayers();
         Check("departed players stop counting", (int)Get(vote, "TotalVotes") == 1);
-        int winner = (int)Call(vote, "Complete");
+        Set(round, "timerPaused", true);
+        ((ModSystem)round).PostUpdateEverything();
+        Check("pausing at the last tick keeps the vote open",
+            (bool)Get(vote, "Active") && (int)Get(round, "RemainingTicks") == 1);
+        Set(round, "timerPaused", false);
+        ((ModSystem)round).PostUpdateEverything();
+        int winner = (int)Get(vote, "Winner");
+        Check("timer expiry selects the winner and starts its result animation",
+            winner == 0 && (int)Get(round, "SelectedPresetIndex") == 0
+            && (int)Get(round, "RemainingTicks") == 114 && !(bool)Get(vote, "Active"));
         Call(vote, "CastVote", 0, id, 3);
         Check("winner is stable and completed voting is locked",
             winner == 0 && (int)Call(vote, "Complete") == 0 && !(bool)Get(vote, "Active"));
@@ -156,6 +183,54 @@ internal static class ArenaVotingTests
         Check("network snapshot carries ballot, winner, timing, and voter IDs",
             (uint)Get(client, "BallotId") == id && (int)Get(client, "Winner") == 0
             && (int)Get(client, "DurationTicks") == 1800 && (int)Get(client, "LocalVote") == 0);
+
+        // Reproduce the server log: a surface exists at the center, but neither team has grounded spawns.
+        Main.maxTilesX = 400;
+        Main.maxTilesY = 300;
+        Main.tile = (Tilemap)Activator.CreateInstance(typeof(Tilemap), All, null,
+            [(ushort)400, (ushort)300], null)!;
+        Main.tileSolid[TileID.Dirt] = true;
+        Tile ground = Main.tile[200, 100];
+        ground.HasTile = true;
+        ground.TileType = TileID.Dirt;
+        for (int tick = 0; tick < 113; tick++)
+            ((ModSystem)round).PostUpdateEverything();
+        Check("the winner remains visible for the whole result duration",
+            (int)Get(round, "RemainingTicks") == 1 && (uint)Get(vote, "BallotId") == id);
+        ((ModSystem)round).PostUpdateEverything();
+        string failure = (string)Get(round, "PreparationFailure");
+        Check("missing team spawns hold the voted boss with a concrete failure",
+            failure.Contains("Grounded Red and Blue spawn positions")
+            && (bool)Get(round, "IsIdleHeld") && Get(round, "CurrentPhase").ToString() == "WaitingForPlayers"
+            && (int)Get(round, "SelectedPresetIndex") == winner);
+        for (int tick = 0; tick < 1800; tick++)
+            ((ModSystem)round).PostUpdateEverything();
+        Check("failed arena setup never silently starts another ballot",
+            (uint)Get(vote, "BallotId") == id && !(bool)Get(vote, "Active")
+            && (int)Get(vote, "Winner") == winner && (string)Get(round, "PreparationFailure") == failure);
+        using (MemoryStream state = new())
+        {
+            using (BinaryWriter writer = new(state, System.Text.Encoding.UTF8, true))
+                ((ModSystem)round).NetSend(writer);
+            state.Position = 0;
+            ModSystem clientRound = (ModSystem)Activator.CreateInstance(roundType, true)!;
+            using (BinaryReader reader = new(state, System.Text.Encoding.UTF8, true))
+                clientRound.NetReceive(reader);
+            Check("joining clients receive the held winner and setup failure",
+                (bool)Get(clientRound, "IsIdleHeld") && (int)Get(clientRound, "SelectedPresetIndex") == winner
+                && (string)Get(clientRound, "PreparationFailure") == failure);
+        }
+        Type actionType = roundType.GetNestedType("AdminAction", All)!;
+        Call(round, "ExecuteAdminAction", Enum.Parse(actionType, "StartRound"), 0);
+        Check("retrying preparation preserves the ballot and its winner",
+            (uint)Get(vote, "BallotId") == id && (int)Get(round, "SelectedPresetIndex") == winner
+            && (bool)Get(round, "IsIdleHeld"));
+        Call(round, "BeginVoting");
+        uint singlePlayerId = (uint)Get(vote, "BallotId");
+        Call(vote, "CastVote", 0, singlePlayerId, 1);
+        ((ModSystem)round).PostUpdateEverything();
+        Check("a single player still gets the full voting countdown",
+            (bool)Get(vote, "Active") && (int)Get(round, "RemainingTicks") == 1799);
         Call(vote, "Start", 300);
         Check("new ballot clears the previous result and votes",
             (uint)Get(vote, "BallotId") != id && (int)Get(vote, "Winner") == -1 && (int)Get(vote, "TotalVotes") == 0);

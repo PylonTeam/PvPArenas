@@ -23,8 +23,6 @@ internal sealed class BossVoteSystem : ModSystem
 
     internal int VoteCount(int option) => VotersFor(option).Count;
     internal int TotalVotes => voters.Sum(group => group.Count);
-    internal bool AllPlayersVoted => Active && votes.Count > 0
-        && Main.player.Where(player => player?.active == true).All(player => votes.ContainsKey(player.whoAmI));
     internal int LocalVote => Array.FindIndex(voters, group => group.Contains((byte)Main.myPlayer));
 
     internal static void RequestVote(int option)
