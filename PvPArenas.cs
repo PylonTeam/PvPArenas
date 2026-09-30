@@ -17,7 +17,9 @@ public sealed class PvPArenas : Mod
         AdminRoundAction,
         SelectLoadout,
         WorldGenRequest,
-        WorldGenStatus
+        WorldGenStatus,
+        LoadoutApplied,
+        LoadoutPositions
     }
 
     public override void HandlePacket(BinaryReader reader, int whoAmI)
@@ -49,7 +51,17 @@ public sealed class PvPArenas : Mod
             case PacketType.SelectLoadout:
                 if (Main.netMode != NetmodeID.Server)
                     return;
-                ArenaPlayer.HandleLoadoutSelect(whoAmI, reader.ReadByte());
+                ArenaPlayer.HandleLoadoutSelect(whoAmI, reader.ReadInt32());
+                break;
+
+            case PacketType.LoadoutApplied:
+                if (Main.netMode == NetmodeID.MultiplayerClient)
+                    ArenaPlayer.ReceiveLoadoutApplied(reader);
+                break;
+
+            case PacketType.LoadoutPositions:
+                if (Main.netMode == NetmodeID.Server)
+                    ArenaPlayer.ReceiveLoadoutPositions(whoAmI, reader);
                 break;
 
             case PacketType.WorldGenRequest:

@@ -27,7 +27,6 @@ internal static class LoadoutPreviewDrawer
         Item Item,
         bool Equip,
         int? HotbarNumber,
-        int InventoryIndex = -1,
         SandboxSlot? Sandbox = null);
 
     // Equipment slot order, matching how Rebuild adds them. The null entry is the
@@ -45,7 +44,7 @@ internal static class LoadoutPreviewDrawer
     private const int EquipmentRows = 3;
     private const int SlotStep = 40;
     private const int SlotSize = 36;
-    private const int EquipmentPhysicsKeyOffset = 1000;
+    private const int EquipmentSlotKeyOffset = 1000;
 
     private const int HeaderHeight = 76;
     private const int PreviewWidth = 96;
@@ -59,14 +58,7 @@ internal static class LoadoutPreviewDrawer
     private const int LoadoutSelectorBottomPadding = 8;
     private const int CardGap = 8;
 
-    private const int EditButtonAreaHeight = 42;
-
-    private static bool editMode;
-    private static int heldItemIndex = -1;
-    private static Item heldItem = new();
-    private static List<int> editOrder = [];
     private static BossFightPreset currentPreset;
-    private static int editingLoadoutIndex = -1;
 
     private const int PreviewJumpDuration = 32;
     private const float PreviewJumpHeight = 30f;
@@ -100,10 +92,8 @@ internal static class LoadoutPreviewDrawer
 
     private static float openingAge, alpha;
     private static float[] hoverAmounts = [], selectionAmounts = [];
-    private static readonly float[] slotHoverAmounts = new float[50 + EquipKinds.Length];
+    private static readonly float[] slotHoverAmounts = new float[LoadoutSlotLayout.SlotCount + EquipKinds.Length];
     private static int hoveredSlot = -1;
-    private static bool editButtonHovered;
-    private static float editHoverAmount;
 
     private static string Label(string key) => Language.GetTextValue("Mods.PvPArenas.LoadoutSelector." + key);
 
@@ -125,17 +115,15 @@ internal static class LoadoutPreviewDrawer
         int selected = NormalizeLoadoutIndex(preset, Main.LocalPlayer.GetModPlayer<ArenaPlayer>().SelectedLoadoutIndex);
         for (int i = 0; i < count; i++)
         {
-            hoverAmounts[i] = MathHelper.Lerp(hoverAmounts[i], hoveredLoadoutIndex == i && !editMode ? 1f : 0f, blend);
+            hoverAmounts[i] = MathHelper.Lerp(hoverAmounts[i], hoveredLoadoutIndex == i ? 1f : 0f, blend);
             selectionAmounts[i] = MathHelper.Lerp(selectionAmounts[i], selected == i ? 1f : 0f, blend);
         }
-        editHoverAmount = MathHelper.Lerp(editHoverAmount, editButtonHovered ? 1f : 0f, blend);
         for (int i = 0; i < slotHoverAmounts.Length; i++)
             slotHoverAmounts[i] = MathHelper.Lerp(slotHoverAmounts[i], hoveredSlot == i ? 1f : 0f, blend);
     }
 
     internal static void Reset()
     {
-        StopEditing(save: false);
         SandboxLoadoutEditor.Close();
         currentPreset = null;
         cachedPresetIndex = cachedDisplayLoadoutIndex = hoveredLoadoutIndex = hoveredSlot = -1;
@@ -143,8 +131,8 @@ internal static class LoadoutPreviewDrawer
         previewPlayer = null;
         layoutRows = 0;
         previewJumpTicks = 0;
-        previewJumpWasDown = editButtonHovered = false;
-        openingAge = alpha = editHoverAmount = 0f;
+        previewJumpWasDown = false;
+        openingAge = alpha = 0f;
         Array.Clear(hoverAmounts);
         Array.Clear(selectionAmounts);
         Array.Clear(slotHoverAmounts);
@@ -162,8 +150,8 @@ internal static class LoadoutPreviewDrawer
         int rows = preset.IsSandbox() ? 5 : EquipmentRows;
         for (int i = 0; i < (preset.Loadouts?.Count ?? 0); i++)
         {
-            Loadout loadout = ArenaPlayer.ResolveBaseLoadout(preset, i);
-            int slots = Math.Clamp(loadout.Inventory?.Count ?? 0, 10, 50);
+            Loadout loadout = ArenaPlayer.ResolveLoadout(preset, i);
+            int slots = Math.Clamp(loadout.Inventory?.Count ?? 0, 10, LoadoutSlotLayout.SlotCount);
             rows = Math.Max(rows, (slots + InventoryColumns - 1) / InventoryColumns);
         }
         return layoutRows = rows;
@@ -187,7 +175,6 @@ internal static class LoadoutPreviewDrawer
         Point mouse = PlayerInput.IgnoreMouseInterface || alpha < .95f
             ? new Point(int.MinValue, int.MinValue)
             : new Point(Main.mouseX, Main.mouseY);
-        editButtonHovered = false;
         hoveredSlot = -1;
 
         // While picking an item, the whole loadout body is replaced by the picker.
@@ -207,16 +194,13 @@ internal static class LoadoutPreviewDrawer
 
         if (manager.SelectedPresetIndex != cachedPresetIndex)
         {
-            StopEditing(save: false);
             layoutRows = 0;
 
             localLoadoutIndex = playerSelectedIndex;
             hoveredLoadoutIndex = -1;
             InvalidateCache();
         }
-        else if (!editMode &&
-         hoveredLoadoutIndex < 0 &&
-         localLoadoutIndex != playerSelectedIndex)
+        else if (hoveredLoadoutIndex < 0 && localLoadoutIndex != playerSelectedIndex)
         {
             // Handles resets between consecutive rounds that happen to use
             // the same preset index.
@@ -234,7 +218,7 @@ internal static class LoadoutPreviewDrawer
         int S(float value) => Math.Max(1, (int)MathF.Round(value * scale));
         Rectangle panel = new((Main.screenWidth - S(designWidth)) / 2, top, S(designWidth), S(designHeight));
 
-        hoveredLoadoutIndex = !editMode && showSelector
+        hoveredLoadoutIndex = showSelector
             ? GetHoveredLoadoutIndex(preset, panel, panel.Y + S(HeaderHeight), S, mouse)
             : -1;
         EnsureRebuilt(manager.SelectedPresetIndex, preset);
@@ -361,28 +345,6 @@ internal static class LoadoutPreviewDrawer
                     mouse,
                     S);
             }
-
-            // Edit loadout button. Sandbox loadouts are edited directly by clicking
-            // slots, so they skip the reorder-style edit button entirely.
-            if (!preset.IsSandbox())
-            {
-                int gridBottom =
-                    contentTop +
-                    gridRows * S(SlotStep);
-
-                Rectangle editButton = new(
-                    panel.Center.X - S(82),
-                    gridBottom + S(7),
-                    S(164),
-                    S(28));
-
-                DrawEditButton(
-                    editButton,
-                    preset,
-                    scale,
-                    mouse,
-                    S);
-            }
         }
         finally
         {
@@ -391,271 +353,6 @@ internal static class LoadoutPreviewDrawer
                 DepthStencilState.None, oldRasterizer, null, Main.UIScaleMatrix);
             device.ScissorRectangle = oldClip;
         }
-        // Cursor items must remain visible when dragged beyond the panel.
-        DrawHeldItem(scale);
-    }
-
-    private static void DrawEditButton(
-    Rectangle button,
-    BossFightPreset preset,
-    float scale,
-    Point mouse,
-    Func<float, int> S)
-    {
-        bool hovered = editButtonHovered = button.Contains(mouse);
-
-        DrawPanel(
-            button,
-            ArenaUIStyle.ChoiceFill(editHoverAmount, editMode ? 1f : 0f),
-            Color.Transparent,
-            S(8));
-
-        Text(
-            Label(editMode ? "Done" : "ArrangeItems"),
-            new Vector2(
-                button.Center.X,
-                button.Y + S(6)),
-            editMode ? ArenaUIStyle.Accent : Color.White,
-            .78f * scale,
-            button.Width - S(12));
-
-        if (!hovered)
-            return;
-
-        Main.LocalPlayer.mouseInterface = true;
-
-        if (!Main.mouseLeft || !Main.mouseLeftRelease)
-            return;
-
-        Main.mouseLeftRelease = false;
-        SoundEngine.PlaySound(SoundID.MenuTick);
-
-        if (editMode)
-            StopEditing(save: true);
-        else
-            StartEditing(preset);
-    }
-
-    private static void StartEditing(BossFightPreset preset)
-    {
-        currentPreset = preset;
-        hoveredLoadoutIndex = -1;
-        ClearHeldItem();
-
-        editingLoadoutIndex =
-            NormalizeLoadoutIndex(
-                preset,
-                localLoadoutIndex);
-
-        Loadout loadout =
-            ArenaPlayer.ResolveBaseLoadout(
-                preset,
-                editingLoadoutIndex);
-
-        editOrder =
-            LocalLoadoutOrder.GetOrder(
-                preset,
-                editingLoadoutIndex,
-                loadout);
-
-        editMode = true;
-        LoadoutItemPhysics.Reset();
-        InvalidateCache();
-
-        Log.Chat(
-            $"Started. loadout={editingLoadoutIndex}, " +
-            $"slots={editOrder.Count}.");
-    }
-
-    private static void StopEditing(bool save)
-    {
-        if (!editMode)
-            return;
-
-        if (save)
-        {
-            if (heldItemIndex >= 0)
-            {
-                int emptySlot =
-                    editOrder.IndexOf(-1);
-
-                if (emptySlot >= 0)
-                {
-                    editOrder[emptySlot] =
-                        heldItemIndex;
-
-                    Log.Chat(
-                        $"Returned held item " +
-                        $"{heldItemIndex} to slot {emptySlot}.");
-                }
-                else
-                {
-                    Log.Chat(
-                        $"No empty slot for held item " +
-                        $"{heldItemIndex}.");
-                }
-            }
-
-            SaveEditing();
-        }
-
-        editMode = false;
-        editingLoadoutIndex = -1;
-        ClearHeldItem();
-        editOrder.Clear();
-        LoadoutItemPhysics.Reset();
-        InvalidateCache();
-    }
-
-    private static void SaveEditing()
-    {
-        if (currentPreset == null ||
-            editingLoadoutIndex < 0)
-        {
-            return;
-        }
-
-        Loadout loadout =
-            ArenaPlayer.ResolveBaseLoadout(
-                currentPreset,
-                editingLoadoutIndex);
-
-        LocalLoadoutOrder.SetOrder(
-            currentPreset,
-            editingLoadoutIndex,
-            loadout,
-            editOrder);
-
-        ArenaPlayer.RequestLoadoutSelect(
-            editingLoadoutIndex);
-    }
-    private static void ClearHeldItem()
-    {
-        heldItemIndex = -1;
-        heldItem.TurnToAir();
-    }
-
-    private static Item GetOriginalItem(int originalIndex)
-    {
-        if (originalIndex < 0 ||
-            currentPreset == null ||
-            editingLoadoutIndex < 0)
-        {
-            return new Item();
-        }
-
-        Loadout loadout =
-            ArenaPlayer.ResolveBaseLoadout(
-                currentPreset,
-                editingLoadoutIndex);
-
-        LoadoutItem entry =
-            LocalLoadoutOrder.ItemAt(
-                loadout,
-                originalIndex);
-
-        return MakeItem(
-            entry?.Item?.Type ?? ItemID.None,
-            entry?.Stack ?? 1);
-    }
-    private static void HandleEditClick(
-    Rectangle cell,
-    SlotEntry entry,
-    Point mouse)
-    {
-        if (!editMode ||
-            entry.InventoryIndex < 0 ||
-            entry.InventoryIndex >= editOrder.Count ||
-            !cell.Contains(mouse))
-        {
-            return;
-        }
-
-        Main.LocalPlayer.mouseInterface = true;
-
-        if (!Main.mouseLeft ||
-            !Main.mouseLeftRelease)
-        {
-            return;
-        }
-
-        Main.mouseLeftRelease = false;
-
-        int slotIndex = entry.InventoryIndex;
-        int clickedItemIndex = editOrder[slotIndex];
-
-        if (heldItemIndex < 0 &&
-            clickedItemIndex < 0)
-        {
-            Log.Chat(
-                $"Clicked empty slot {slotIndex}.");
-
-            return;
-        }
-
-        int previousHeldIndex = heldItemIndex;
-
-        LoadoutItemPhysics.SwapWithCursor(slotIndex);
-
-        // Resolve and cache the item being picked up before changing the order.
-        Item nextHeldItem = clickedItemIndex >= 0
-            ? entry.Item.Clone()
-            : new Item();
-
-        // Fall back to the original preset item if the displayed slot happened
-        // to be stale for this frame.
-        if (clickedItemIndex >= 0 &&
-            nextHeldItem.IsAir)
-        {
-            nextHeldItem =
-                GetOriginalItem(clickedItemIndex);
-        }
-
-        // Put the previously held item into the clicked slot.
-        editOrder[slotIndex] =
-            previousHeldIndex;
-
-        // Pick up the item that was in the clicked slot.
-        heldItemIndex =
-            clickedItemIndex;
-
-        heldItem =
-            nextHeldItem;
-
-        if (heldItemIndex < 0)
-            heldItem.TurnToAir();
-
-        Log.Chat(
-            $"Slot {slotIndex}: " +
-            $"placed={previousHeldIndex}, " +
-            $"pickedUp={heldItemIndex}, " +
-            $"visual={heldItem.type}:{heldItem.Name}.");
-
-        InvalidateCache();
-
-        // Moving into an empty slot completes the operation.
-        if (heldItemIndex < 0)
-            SaveEditing();
-    }
-
-    private static void DrawHeldItem(float scale)
-    {
-        if (!editMode ||
-            heldItemIndex < 0 ||
-            heldItem == null ||
-            heldItem.IsAir)
-        {
-            return;
-        }
-
-        Main.LocalPlayer.mouseInterface = true;
-
-        LoadoutItemPhysics.DrawCursorItem(
-            heldItem,
-            Main.MouseScreen + new Vector2(28f, 28f),
-            scale,
-            40f,
-            alpha);
     }
 
     private static int GetDesignWidth(
@@ -678,8 +375,7 @@ internal static class LoadoutPreviewDrawer
         return HeaderHeight
             + GetLoadoutSelectorHeight(optionCount)
             + inventoryRows * SlotStep
-            + SidePadding
-            + EditButtonAreaHeight; // Extra space for the edit loadout button
+            + SidePadding;
     }
 
     private static float CalculateScale(
@@ -841,8 +537,7 @@ internal static class LoadoutPreviewDrawer
             {
                 Main.LocalPlayer.mouseInterface = true;
 
-                if (!editMode &&
-                    Main.mouseLeft &&
+                if (Main.mouseLeft &&
                     Main.mouseLeftRelease &&
                     !selected)
                 {
@@ -981,16 +676,8 @@ internal static class LoadoutPreviewDrawer
         preset,
         loadoutIndex);
 
-        Loadout loadout =
-            editMode &&
-            loadoutIndex == editingLoadoutIndex
-                ? LocalLoadoutOrder.Apply(
-                    baseLoadout,
-                    editOrder)
-                : LocalLoadoutOrder.Apply(
-                    preset,
-                    loadoutIndex,
-                    baseLoadout);
+        Loadout loadout = preset.IsSandbox() ? baseLoadout
+            : LocalLoadoutPositions.Apply(preset, loadoutIndex, baseLoadout);
 
         equipmentSlots.Clear();
         inventorySlots.Clear();
@@ -1026,7 +713,7 @@ internal static class LoadoutPreviewDrawer
         int inventoryCount =
             Math.Min(
                 loadout.Inventory?.Count ?? 0,
-                50);
+                LoadoutSlotLayout.SlotCount);
 
         // Sandbox always shows the full editable grid; other presets grow to fit.
         int minimumSlots = preset.IsSandbox()
@@ -1059,7 +746,6 @@ internal static class LoadoutPreviewDrawer
                             ? 10
                             : i + 1
                         : null,
-                    i,
                     preset.IsSandbox()
                         ? new SandboxSlot(SandboxSlotKind.Inventory, i)
                         : null));
@@ -1436,7 +1122,7 @@ internal static class LoadoutPreviewDrawer
                 equipmentSlots[i],
                 scale,
                 mouse,
-                EquipmentPhysicsKeyOffset + i);
+                EquipmentSlotKeyOffset + i);
         }
     }
 
@@ -1445,37 +1131,17 @@ internal static class LoadoutPreviewDrawer
         SlotEntry entry,
         float uiScale,
         Point mouse,
-        int physicsKey)
+        int slotKey)
     {
-        int hoverKey = physicsKey >= EquipmentPhysicsKeyOffset ? 50 + physicsKey - EquipmentPhysicsKeyOffset : physicsKey;
+        int hoverKey = slotKey >= EquipmentSlotKeyOffset ? LoadoutSlotLayout.SlotCount + slotKey - EquipmentSlotKeyOffset : slotKey;
         if (cell.Contains(mouse)) hoveredSlot = hoverKey;
         DrawPanel(cell, ArenaUIStyle.ChoiceFill(slotHoverAmounts[hoverKey], 0f), Color.Transparent,
             Math.Max(2, (int)MathF.Round(6f * uiScale)));
 
         if (!entry.Item.IsAir)
         {
-            if (editMode)
-            {
-                LoadoutItemPhysics.DrawSlotItem(
-                    entry.Item,
-                    cell.Center.ToVector2(),
-                    uiScale * .85f,
-                    cell.Width - 8f,
-                    alpha,
-                    physicsKey,
-                    cell.Contains(mouse));
-            }
-            else
-            {
-                ItemSlot.DrawItemIcon(
-                    entry.Item,
-                    31,
-                    Main.spriteBatch,
-                    cell.Center.ToVector2(),
-                    uiScale * .85f,
-                    cell.Width - 8f,
-                    Color.White * alpha);
-            }
+            ItemSlot.DrawItemIcon(entry.Item, 31, Main.spriteBatch,
+                cell.Center.ToVector2(), uiScale * .85f, cell.Width - 8f, Color.White * alpha);
         }
 
         float textScale =
@@ -1535,7 +1201,6 @@ internal static class LoadoutPreviewDrawer
             return;
         }
 
-        HandleEditClick(cell, entry, mouse);
     }
 
     // Max life / max mana of the shown loadout, drawn as a small icon + number strip

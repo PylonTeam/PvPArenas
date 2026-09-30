@@ -4,6 +4,7 @@ using ErkySSC.Common.RegionProtection;
 using PvPFramework.Common.Scoreboard;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using Terraria.Enums;
 using Terraria.ID;
@@ -20,6 +21,8 @@ internal sealed class ArenaPlayer : ModPlayer
     private bool suppressArenaSpawn;
 
     internal int SelectedLoadoutIndex;
+    private int loadoutRevision;
+    private bool positionsPending;
 
     private readonly Dictionary<int, uint> bossDamageByItem = [];
 
@@ -144,7 +147,7 @@ internal sealed class ArenaPlayer : ModPlayer
             {
                 if (Main.netMode == NetmodeID.MultiplayerClient)
                 {
-                    if (Player.whoAmI == Main.myPlayer)
+                    if (Player.whoAmI == Main.myPlayer && preset.IsSandbox())
                     {
                         ApplyLoadout(Player, preset);
                         roundPrepared = true;
@@ -479,10 +482,12 @@ internal sealed class ArenaPlayer : ModPlayer
         Player player = Main.LocalPlayer;
         ArenaPlayer arenaPlayer = player.GetModPlayer<ArenaPlayer>();
 
+        LocalInventoryPositions.Stop();
+
         arenaPlayer.SelectedLoadoutIndex = loadoutIndex;
 
-        // Apply immediately to the owning client.
-        ApplyLoadout(player, preset);
+        // Fixed kits arrive from the server before local slot preferences are applied.
+        if (preset.IsSandbox()) ApplyLoadout(player, preset);
 
         if (Main.netMode == NetmodeID.MultiplayerClient)
         {
@@ -623,6 +628,74 @@ internal sealed class ArenaPlayer : ModPlayer
         SyncEquipment(player);
         NetMessage.SendData(MessageID.PlayerLifeMana, number: player.whoAmI);
         NetMessage.SendData(MessageID.PlayerMana, number: player.whoAmI);
+        if (!preset.IsSandbox())
+        {
+            ArenaPlayer owner = player.GetModPlayer<ArenaPlayer>();
+            owner.loadoutRevision++;
+            owner.positionsPending = true;
+            owner.SendLoadoutApplied(preset, positioned: false);
+        }
+    }
+
+    private void SendLoadoutApplied(BossFightPreset preset, bool positioned)
+    {
+        ModPacket packet = ModContent.GetInstance<PvPArenas>().GetPacket();
+        packet.Write((byte)PvPArenas.PacketType.LoadoutApplied);
+        packet.Write(preset.Boss.Type);
+        packet.Write(SelectedLoadoutIndex);
+        packet.Write(loadoutRevision);
+        packet.Write(positioned);
+        packet.Send(Player.whoAmI);
+    }
+
+    internal static void ReceiveLoadoutApplied(BinaryReader reader)
+    {
+        if (Main.netMode != NetmodeID.MultiplayerClient) return;
+        int boss = reader.ReadInt32(), index = reader.ReadInt32(), revision = reader.ReadInt32();
+        bool positioned = reader.ReadBoolean();
+        RoundManager manager = ModContent.GetInstance<RoundManager>();
+        if (!manager.TryGetSelectedPreset(out BossFightPreset preset) || preset.Boss.Type != boss
+            || preset.IsSandbox() || !IsValidLoadoutIndex(preset, index)) return;
+        ArenaPlayer owner = Main.LocalPlayer.GetModPlayer<ArenaPlayer>();
+        owner.SelectedLoadoutIndex = index;
+        owner.roundPrepared = true;
+        LocalInventoryPositions.Stop();
+        if (positioned)
+        {
+            LocalInventoryPositions.Begin(preset, index);
+            return;
+        }
+        int[] positions = LocalLoadoutPositions.Get(preset, index, ResolveBaseLoadout(preset, index));
+        ModPacket packet = ModContent.GetInstance<PvPArenas>().GetPacket();
+        packet.Write((byte)PvPArenas.PacketType.LoadoutPositions);
+        packet.Write(boss);
+        packet.Write(index);
+        packet.Write(revision);
+        foreach (int type in positions) packet.Write(type);
+        packet.Send();
+    }
+
+    internal static void ReceiveLoadoutPositions(int playerId, BinaryReader reader)
+    {
+        if (Main.netMode != NetmodeID.Server) return;
+        int boss = reader.ReadInt32(), index = reader.ReadInt32(), revision = reader.ReadInt32();
+        int[] positions = new int[LoadoutSlotLayout.SlotCount];
+        for (int i = 0; i < positions.Length; i++) positions[i] = reader.ReadInt32();
+        RoundManager manager = ModContent.GetInstance<RoundManager>();
+        if (playerId < 0 || playerId >= Main.maxPlayers || Main.player[playerId]?.active != true
+            || manager.CurrentPhase is not (RoundManager.RoundPhase.FreezeCountdown or RoundManager.RoundPhase.Playing)
+            || !manager.TryGetSelectedPreset(out BossFightPreset preset) || preset.Boss.Type != boss
+            || preset.IsSandbox() || !IsValidLoadoutIndex(preset, index)) return;
+        Player player = Main.player[playerId];
+        ArenaPlayer owner = player.GetModPlayer<ArenaPlayer>();
+        if (!owner.roundPrepared || (Team)player.team is not (Team.Red or Team.Blue)
+            || !owner.positionsPending || owner.loadoutRevision != revision || owner.SelectedLoadoutIndex != index) return;
+        // Revalidate against the server's kit, and only move objects it already granted.
+        Item[] arranged = LoadoutSlotLayout.Reorder(player.inventory, ResolveBaseLoadout(preset, index), positions);
+        Array.Copy(arranged, player.inventory, arranged.Length);
+        owner.positionsPending = false;
+        SyncItems(player, player.inventory, PlayerItemSlotID.Inventory0);
+        owner.SendLoadoutApplied(preset, positioned: true);
     }
 
     internal static Loadout ResolveLoadout(
@@ -645,10 +718,10 @@ internal sealed class ArenaPlayer : ModPlayer
 
         // Sandbox loadouts are already the player's exact slot layout; the reorder
         // pass only applies to fixed preset loadouts.
-        if (preset?.IsSandbox() == true || Main.dedServ)
+        if (preset?.IsSandbox() == true || Main.dedServ || Main.netMode == NetmodeID.Server)
             return loadout;
 
-        return LocalLoadoutOrder.Apply(
+        return LocalLoadoutPositions.Apply(
             preset,
             loadoutIndex,
             loadout);

@@ -9,8 +9,6 @@ Voting: {
 
 LoadoutSelector: {
 	Header: Choose your loadout
-	ArrangeItems: Arrange items
-	Done: Done
 	Sandbox: Sandbox
 	UnnamedLoadout: Loadout {0}
 }
