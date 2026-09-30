@@ -3,6 +3,7 @@ using PvPArenas.Common.Game;
 using PvPArenas.Common.Game.BossVoting;
 using PvPArenas.Common.Game.LoadoutSelector;
 using PvPArenas.Core.Compat;
+using PvPArenas.Common.Generation;
 using System;
 using System.IO;
 using Terraria.ID;
@@ -19,7 +20,8 @@ public sealed class PvPArenas : Mod
         WorldGenRequest,
         WorldGenStatus,
         LoadoutApplied,
-        LoadoutPositions
+        LoadoutPositions,
+        ArenaWorldSync
     }
 
     public override void HandlePacket(BinaryReader reader, int whoAmI)
@@ -27,6 +29,10 @@ public sealed class PvPArenas : Mod
         PacketType type = (PacketType)reader.ReadByte();
         switch (type)
         {
+            case PacketType.ArenaWorldSync:
+                ArenaWorldSync.HandlePacket(reader, whoAmI);
+                break;
+
             case PacketType.CastVote:
                 if (Main.netMode != NetmodeID.Server)
                     return;

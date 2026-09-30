@@ -268,7 +268,6 @@ internal sealed class WorldGenPassRunner : ModSystem
         // Invalidate clients in that case too; this disposable world has no rollback.
         if (committed)
         {
-            ModContent.GetInstance<ArenaPreparation>()?.MarkWorldChanged();
             revision++;
             try
             {

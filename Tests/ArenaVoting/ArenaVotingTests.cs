@@ -212,7 +212,7 @@ internal static class ArenaVotingTests
             (uint)Get(client, "BallotId") == id && (int)Get(client, "Winner") == 0
             && (int)Get(client, "DurationTicks") == 1800 && (int)Get(client, "LocalVote") == 0);
 
-        // Reproduce the server log: a surface exists at the center, but neither team has grounded spawns.
+        // A disposable world without a captured template must hold the winner safely.
         Main.maxTilesX = 850;
         Main.maxTilesY = 600;
         Main.tile = (Tilemap)Activator.CreateInstance(typeof(Tilemap), All, null,
@@ -233,8 +233,8 @@ internal static class ArenaVotingTests
             (int)Get(round, "RemainingTicks") == 1 && (uint)Get(vote, "BallotId") == id);
         ((ModSystem)round).PostUpdateEverything();
         string failure = (string)Get(round, "PreparationFailure");
-        Check("missing lobby spawn holds the voted boss with a concrete failure",
-            failure.Contains("lobby needs a dry, grounded spawn")
+        Check("missing authored template holds the voted boss with a concrete failure",
+            failure.Contains("authored arena template is unavailable")
             && (bool)Get(round, "IsIdleHeld") && Get(round, "CurrentPhase").ToString() == "WaitingForPlayers"
             && (int)Get(round, "SelectedPresetIndex") == winner);
         for (int tick = 0; tick < 1800; tick++)

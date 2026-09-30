@@ -3,7 +3,7 @@ using Terraria.ID;
 
 namespace PvPArenas.Common.Game;
 
-/// <summary>ErkySSC protects the staging lobby; Arenas hides it during the countdown and fight.</summary>
+/// <summary>ErkySSC protects the idle lobby; Arenas owns player protection during replacement and fights.</summary>
 internal sealed class ArenaSpawnBoxIntegration : ModSystem
 {
     internal const string RegionKey = "PvPArenas.Spawnbox";
@@ -16,7 +16,7 @@ internal sealed class ArenaSpawnBoxIntegration : ModSystem
         {
             Rectangle area = RegionSystem.Instance.FindManaged(RegionKey)?.Settings.TileArea
                 ?? RegionSystem.Defaults().TileArea;
-            // Always preserve the actual world spawn, even if an admin moved the region away from it.
+            // Include the actual world spawn when reporting the lobby's occupied bounds.
             area = Rectangle.Union(area, new Rectangle(Main.spawnTileX - 5, Main.spawnTileY - 6, 11, 13));
             area.Inflate(2, 2);
             return Rectangle.Intersect(area, new Rectangle(1, 4, Main.maxTilesX - 2, Main.maxTilesY - 5));
@@ -69,8 +69,10 @@ internal sealed class ArenaSpawnBoxIntegration : ModSystem
         if (Main.netMode == NetmodeID.MultiplayerClient)
             return;
 
+        // Region tile protection must not veto the server's generated objects or framing.
+        // Generating already freezes players and makes them immune through ArenaPlayer.
         bool lobbyActive = ModContent.GetInstance<RoundManager>().CurrentPhase
-            is not (RoundManager.RoundPhase.FreezeCountdown or RoundManager.RoundPhase.Playing);
+            is RoundManager.RoundPhase.WaitingForPlayers or RoundManager.RoundPhase.VotingOrEndScreen;
         if (registered == lobbyActive)
             return;
 

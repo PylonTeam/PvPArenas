@@ -8,6 +8,6 @@ dotnet run --project Tests/RegionIntegration -- "<tModLoader installation>" "<Mo
 ```
 
 The checks use the compiled mods and real tModLoader types without starting a
-game, network listener, or Steam session. They cover lobby activation, countdown
-and combat deactivation, preserving manual regions and saved settings, world
+game, network listener, or Steam session. They cover lobby activation, generation,
+countdown and combat deactivation, preserving manual regions and saved settings, world
 spawn movement, save/reload, late-join snapshots, and cleanup.

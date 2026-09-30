@@ -347,8 +347,6 @@ internal sealed class RoundManager : ModSystem
         }
 
         currentLayout = null;
-        // Registration is needed before calculating the protected staging rectangle.
-        SetPhase(RoundPhase.Generating, 0);
         try
         {
             ArenaPreparation preparation = ModContent.GetInstance<ArenaPreparation>();
@@ -360,7 +358,7 @@ internal sealed class RoundManager : ModSystem
             ModContent.GetInstance<BossManager>().Cleanup();
             ArenaPlayer.ReleaseAll();
             stagingSpawn = preparation.StagingSpawn;
-            SyncState();
+            SetPhase(RoundPhase.Generating, 0);
             foreach (Player player in Main.player)
                 if (player?.active == true)
                     ArenaPlayer.Stage(player, stagingSpawn);
@@ -416,6 +414,12 @@ internal sealed class RoundManager : ModSystem
     private void HoldPreparationFailure(string failure)
     {
         ModContent.GetInstance<ArenaPreparation>()?.Cancel();
+        // Preparation recovers the authored world before reporting a failed job.
+        // Its old staging position may have been inside the jungle, so return players to world spawn.
+        if (ArenaWorldSystem.IsCompactWorld && ArenaTemplate.Available)
+            foreach (Player player in Main.player)
+                if (player?.active == true)
+                    ArenaPlayer.Stage(player, new Point(Main.spawnTileX, Main.spawnTileY));
         // Keep the completed ballot so Start Round retries its winner instead of rolling another boss.
         preparationFailure = failure;
         currentLayout = null;

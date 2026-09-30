@@ -34,7 +34,7 @@ internal static class JungleArenaStructures
             {
                 0 => builder.Hive(),
                 1 => builder.Mahogany(),
-                2 => builder.Shelter(cabin: false),
+                2 => builder.Shrine(),
                 _ => builder.Shelter(cabin: true)
             };
             MirrorTerrain(bounds);
@@ -49,6 +49,8 @@ internal static class JungleArenaStructures
                 Chest(objectBottom, kind);
                 Chest(new Point(Main.maxTilesX - 2 - objectBottom.X, objectBottom.Y), kind);
             }
+            Log.Debug($"[worldgen] PASS | Jungle landmark: {new[] { "Hive", "Mahogany", "Shrine", "Cabin" }[kind]} | "
+                + $"MirroredPairs: 1/1 | Left: {bounds.X},{bounds.Y},{bounds.Width},{bounds.Height}");
             yield return bounds;
             yield return Reflect(bounds);
         }
@@ -204,6 +206,42 @@ internal static class JungleArenaStructures
                 Solid(x, floor, TileID.LivingMahogany, WallID.LivingWoodUnsafe);
             }
             return new Point(chestX, floor - 1);
+        }
+
+        internal Point Shrine()
+        {
+            const ushort block = TileID.Mudstone, wall = WallID.MudstoneBrick;
+            int floor = cy + 9, roof = cy - 7;
+            // A small stepped Jungle shrine embedded into the cave floor, with an accessible Ivy Chest.
+            // Its reserved envelope includes the approach, foundation and roof so later passes cannot cut it.
+            for (int x = bounds.Left; x < bounds.Right; x++)
+            for (int y = bounds.Top; y < bounds.Bottom; y++)
+            {
+                if (y >= floor + 3) Solid(x, y, TileID.Mud, WallID.JungleUnsafe);
+                else if (Math.Abs(x - cx) <= 15 && y >= floor)
+                    Solid(x, y, block, wall);
+                else Air(x, y, WallID.JungleUnsafe);
+            }
+            for (int x = cx - 11; x <= cx + 11; x++)
+            {
+                int rise = Math.Max(0, 3 - Math.Abs(x - cx) / 3);
+                for (int y = roof - rise; y <= roof + 1; y++) Solid(x, y, block, wall);
+                for (int y = roof + 2; y < floor; y++)
+                    Main.tile[x, y].WallType = wall;
+            }
+            for (int side = -1; side <= 1; side += 2)
+            {
+                int column = cx + side * 9;
+                for (int y = roof + 2; y < floor; y++)
+                for (int x = column - 1; x <= column + 1; x++) Solid(x, y, block, wall);
+                // Doorway through the lower columns, with a continuous seven-tile-high approach.
+                for (int x = side < 0 ? bounds.Left : cx + 5; x <= (side < 0 ? cx - 5 : bounds.Right - 1); x++)
+                for (int y = floor - 7; y < floor; y++) Air(x, y, wall);
+                for (int step = 0; step < 3; step++)
+                for (int y = floor + step; y < bounds.Bottom; y++)
+                    Solid(cx + side * (16 + step), y, block, WallID.JungleUnsafe);
+            }
+            return new Point(cx - 1, floor - 1);
         }
 
         internal Point Shelter(bool cabin)

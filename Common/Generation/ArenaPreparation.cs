@@ -9,16 +9,13 @@ using Terraria.Localization;
 
 namespace PvPArenas.Common.Generation;
 
-/// <summary>Runs one bounded terrain step per server tick while the round holds players in the lobby.</summary>
+/// <summary>Build the complete server world, verify it on clients, then release the round.</summary>
 internal sealed class ArenaPreparation : ModSystem
 {
     private IEnumerator<Rectangle> steps;
-    private Rectangle pendingSync;
-    private Rectangle protectedLobby;
-    private TileWallWireStateData[] lobbyFramingState;
-    private int stepsSinceSync;
-    private bool authoredWorldChanged;
-    private bool restoringAuthored;
+    private BossFightPreset preparingPreset;
+    private bool restoringAuthored, syncing;
+    private string recoveryFailure = "";
     private WorldGenProgressLog progressLog;
     private int generationEpoch;
 
@@ -33,163 +30,110 @@ internal sealed class ArenaPreparation : ModSystem
 
     private static void UpdateWorld(On_WorldGen.orig_UpdateWorld orig)
     {
-        // Players still update; random terrain updates must not race a partly built arena.
+        // Keep the verified world stable until all waiting clients acknowledge it.
         if (ModContent.GetInstance<RoundManager>().CurrentPhase != RoundManager.RoundPhase.Generating)
             orig();
     }
 
     internal bool TryBegin(BossFightPreset preset, out string failure)
     {
-        failure = "";
-        if (Main.netMode != NetmodeID.Server)
-            failure = "Arena preparation must run on the server.";
-        else if (Main.maxTilesX != ArenaWorldSystem.Width || Main.maxTilesY != ArenaWorldSystem.Height)
-            failure = "Reopen the server to load Arenas_v10.";
-        else
-            failure = ArenaWorldSystem.MissingArena(preset.ArenaKind);
-        if (failure.Length > 0)
-            return false;
-
-        Rectangle lobby = ArenaSpawnBoxIntegration.LobbyBounds;
-        if (!ArenaGeneration.TryFindSpawn(lobby, Main.spawnTileY, out Point spawn))
-        {
-            failure = "The lobby needs a dry, grounded spawn before terrain can be generated.";
-            return false;
-        }
-        bool jungle = preset.ArenaKind == ArenaKind.UndergroundJungle;
-        if ((jungle || authoredWorldChanged) && !ArenaTemplate.Available)
-        {
-            failure = "The authored arena template is unavailable. Reopen the server.";
-            return false;
-        }
+        failure = Main.netMode != NetmodeID.Server ? "Arena preparation must run on the server."
+            : !ArenaWorldSystem.IsCompactWorld ? "Reopen the server to load Arenas_v10."
+            : !ArenaTemplate.Available ? "The authored arena template is unavailable. Reopen the server."
+            : ArenaWorldSystem.MissingArena(preset.ArenaKind);
+        if (failure.Length > 0) return false;
 
         Cancel();
-        protectedLobby = lobby;
-        StagingSpawn = spawn;
-        if (!jungle && !authoredWorldChanged)
-            return true;
-
+        // Staging is a frozen player position, never an exclusion in the new terrain.
+        StagingSpawn = new Point(Math.Clamp(Main.spawnTileX, 10, Main.maxTilesX - 11),
+            Math.Clamp(Main.spawnTileY, 10, Main.maxTilesY - 11));
         ModContent.GetInstance<WorldGenPassRunner>()?.Shutdown();
-        int seed = jungle ? Random.Shared.Next() : 0, jobEpoch = generationEpoch;
-        progressLog = new(jungle ? "Plantera arena" : "Restore Arenas_v10", seed, Main.maxTilesX, Main.maxTilesY,
-            (message, stalled) => Main.QueueMainThreadAction(() =>
-            {
-                if (Main.netMode == NetmodeID.Server && jobEpoch == generationEpoch && progressLog != null)
-                    ChatHelper.BroadcastChatMessage(NetworkText.FromLiteral(message), stalled ? Color.OrangeRed : Color.LightGreen);
-            }));
-        try
-        {
-            progressLog.Report("Clearing previous arena actors", 0);
-            ClearActors();
-            ArenaTemplate.ClearEntitiesOutside(lobby);
-            steps = (jungle ? MirroredJungleGenerator.GenerateWithProgress(seed, lobby, progressLog)
-                : ArenaTemplate.Restore(lobby)).GetEnumerator();
-            restoringAuthored = !jungle;
-            if (restoringAuthored) progressLog.Report("Restoring authored terrain", 0);
-            authoredWorldChanged = true;
-        }
-        catch (Exception exception)
-        {
-            progressLog.Fail(exception);
-            Cancel();
-            throw;
-        }
+        restoringAuthored = preset.ArenaKind != ArenaKind.UndergroundJungle;
+        preparingPreset = preset;
+        recoveryFailure = "";
+        int seed = restoringAuthored ? 0 : Random.Shared.Next();
+        StartLog(restoringAuthored ? "Restore Arenas_v10" : "Plantera arena", seed);
+        ClearActors();
+        ArenaTemplate.ClearEntitiesOutside(Rectangle.Empty);
+        // Every transition replaces every tile, even repeated rounds of the same preset.
+        steps = (restoringAuthored ? ArenaTemplate.Restore(Rectangle.Empty)
+            : MirroredJungleGenerator.GenerateWithProgress(seed, Rectangle.Empty, progressLog)).GetEnumerator();
         return true;
     }
 
     internal bool Advance(out string failure)
     {
         failure = "";
-        if (Main.netMode != NetmodeID.Server)
-            return false;
+        if (Main.netMode != NetmodeID.Server) return false;
         try
         {
+            if (syncing)
+            {
+                if (!ArenaWorldSync.Advance(out string syncFailure)) return false;
+                if (syncFailure.Length > 0) throw new InvalidOperationException(syncFailure);
+                syncing = false;
+                progressLog?.Report("Clients verified the complete arena", 1);
+                progressLog?.Complete();
+                progressLog = null;
+                failure = recoveryFailure;
+                recoveryFailure = "";
+                preparingPreset = null;
+                generationEpoch++;
+                return true;
+            }
+
             if (steps?.MoveNext() == true)
             {
-                Rectangle area = steps.Current;
-                // Native passes work in private buffers; players keep updating while the worker runs.
-                if (area.IsEmpty)
-                    return false;
-                if (restoringAuthored) progressLog?.Report("Restoring authored terrain", area.Right / (double)Main.maxTilesX);
-                // The authored snapshot already contains valid frames. Reframing it
-                // against the next, still-jungle strip can change or destroy objects.
-                if (!restoringAuthored)
-                {
-                    progressLog?.SetOperation("Framing tiles");
-                    FrameOutsideLobby(area);
-                    progressLog?.SetOperation(null);
-                }
-                pendingSync = pendingSync.IsEmpty ? area : Rectangle.Union(pendingSync, area);
-                if (++stepsSinceSync >= 8)
-                    FlushTiles();
+                if (restoringAuthored)
+                    progressLog?.Report("Restoring every authored tile", steps.Current.Right / (double)Main.maxTilesX);
+                // No partial snapshots or framing against the previous arena are published.
                 return false;
             }
-            if (steps != null)
-            {
-                steps.Dispose();
-                steps = null;
-                if (restoringAuthored)
-                {
-                    progressLog?.SetOperation("Verifying authored tiles");
-                    ArenaTemplate.VerifyRestore(protectedLobby);
-                    progressLog?.SetOperation(null);
-                }
-                authoredWorldChanged = !restoringAuthored;
-            }
-            progressLog?.Report("Finishing tile synchronization", 0);
-            FlushTiles();
-            progressLog?.SetOperation("Synchronizing world metadata");
-            NetMessage.SendData(MessageID.WorldData);
-            progressLog?.SetOperation(null);
-            progressLog?.Report("Finishing tile synchronization", 1);
-            progressLog?.Complete();
-            progressLog = null;
-            generationEpoch++;
-            return true;
+            steps?.Dispose();
+            steps = null;
+            if (restoringAuthored) ArenaTemplate.VerifyRestore(Rectangle.Empty);
+            if (recoveryFailure.Length == 0
+                && !ArenaGeneration.TryResolve(preparingPreset, out _, out string layoutFailure))
+                throw new InvalidOperationException(layoutFailure);
+            progressLog?.Report("Synchronizing and verifying the complete arena", 0);
+            ArenaWorldSync.Begin();
+            syncing = true;
+            return false;
         }
         catch (Exception exception)
         {
-            authoredWorldChanged = true;
-            failure = exception.Message;
-            progressLog?.Fail(exception);
             Log.Error(exception);
-            Cancel();
+            progressLog?.Fail(exception);
+            progressLog = null;
+            ArenaWorldSync.Cancel();
+            syncing = false;
+            steps?.Dispose();
+            steps = null;
+            if (recoveryFailure.Length == 0 && ArenaTemplate.Available)
+            {
+                // A failed job never leaves a half-built arena as a playable world.
+                recoveryFailure = exception.Message;
+                restoringAuthored = true;
+                StartLog("Recover Arenas_v10", 0);
+                ClearActors();
+                steps = ArenaTemplate.Restore(Rectangle.Empty).GetEnumerator();
+                return false;
+            }
+            failure = $"{recoveryFailure} Recovery failed: {exception.Message}";
+            recoveryFailure = "";
             return true;
         }
     }
 
-    internal void MarkWorldChanged() => authoredWorldChanged = true;
-
-    private void FrameOutsideLobby(Rectangle area)
+    private void StartLog(string purpose, int seed)
     {
-        area.Inflate(1, 1);
-        area = Rectangle.Intersect(area, new Rectangle(1, 1, Main.maxTilesX - 3, Main.maxTilesY - 3));
-        Rectangle framingExclusion = protectedLobby;
-        framingExclusion.Inflate(2, 2);
-        // TileFrame recursively frames merging neighbors beyond its requested coordinates.
-        // Retain the occupied lobby's live framing state; a wider exclusion alone cannot bound recursion.
-        int count = protectedLobby.Width * protectedLobby.Height;
-        if (lobbyFramingState?.Length != count) lobbyFramingState = new TileWallWireStateData[count];
-        TileWallWireStateData[] states = Main.tile.GetData<TileWallWireStateData>();
-        for (int x = 0; x < protectedLobby.Width; x++)
-            Array.Copy(states, (protectedLobby.Left + x) * Main.tile.Height + protectedLobby.Top,
-                lobbyFramingState, x * protectedLobby.Height, protectedLobby.Height);
-        try
-        {
-            for (int x = area.Left; x < area.Right; x++)
-            for (int y = area.Top; y < area.Bottom; y++)
-                if (!framingExclusion.Contains(x, y))
-                {
-                    WorldGen.TileFrame(x, y, noBreak: true);
-                    Framing.WallFrame(x, y);
-                }
-        }
-        finally
-        {
-            for (int x = 0; x < protectedLobby.Width; x++)
-                Array.Copy(lobbyFramingState, x * protectedLobby.Height, states,
-                    (protectedLobby.Left + x) * Main.tile.Height + protectedLobby.Top, protectedLobby.Height);
-        }
+        int epoch = generationEpoch;
+        progressLog = new(purpose, seed, Main.maxTilesX, Main.maxTilesY,
+            (message, stalled) => Main.QueueMainThreadAction(() =>
+            {
+                if (Main.netMode == NetmodeID.Server && epoch == generationEpoch && progressLog != null)
+                    ChatHelper.BroadcastChatMessage(NetworkText.FromLiteral(message), stalled ? Color.OrangeRed : Color.LightGreen);
+            }));
     }
 
     private static void ClearActors()
@@ -203,7 +147,6 @@ internal sealed class ArenaPreparation : ModSystem
         for (int i = 0; i < Main.maxProjectiles; i++)
             if (Main.projectile[i]?.active == true)
             {
-                // Do not run Kill callbacks: explosives must not alter the protected spawn.
                 Main.projectile[i].active = false;
                 NetMessage.SendData(MessageID.KillProjectile, number: Main.projectile[i].identity,
                     number2: Main.projectile[i].owner);
@@ -212,37 +155,23 @@ internal sealed class ArenaPreparation : ModSystem
 
     internal void Cancel()
     {
-        generationEpoch++; // Notices already queued by the timer belong only to the cancelled preparation.
-        try
+        generationEpoch++;
+        bool interrupted = steps != null || syncing;
+        steps?.Dispose();
+        steps = null;
+        preparingPreset = null;
+        syncing = false;
+        recoveryFailure = "";
+        progressLog?.Dispose();
+        progressLog = null;
+        ArenaWorldSync.Cancel();
+        if (interrupted && Main.netMode == NetmodeID.Server && ArenaWorldSystem.IsCompactWorld && ArenaTemplate.Available)
         {
-            if (steps != null)
-            {
-                // A cancelled restore also leaves a mixed world that must be restored before the next fight.
-                authoredWorldChanged = true;
-                steps.Dispose();
-                steps = null;
-            }
-            FlushTiles();
-        }
-        finally
-        {
-            progressLog?.Dispose();
-            progressLog = null;
+            foreach (Rectangle _ in ArenaTemplate.Restore(Rectangle.Empty)) { }
+            ArenaTemplate.VerifyRestore(Rectangle.Empty);
         }
     }
 
-    private void FlushTiles()
-    {
-        if (!pendingSync.IsEmpty)
-        {
-            progressLog?.SetOperation("Synchronizing tiles to clients");
-            ArenaTileSync.Send(pendingSync);
-            progressLog?.SetOperation(null);
-        }
-        pendingSync = Rectangle.Empty;
-        stepsSinceSync = 0;
-    }
-
-    public override void OnWorldLoad() { Cancel(); authoredWorldChanged = false; }
-    public override void OnWorldUnload() { Cancel(); lobbyFramingState = null; }
+    public override void OnWorldLoad() => Cancel();
+    public override void OnWorldUnload() => Cancel();
 }

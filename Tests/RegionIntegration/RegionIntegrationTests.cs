@@ -54,7 +54,8 @@ internal static class RegionIntegrationTests
         Check("unchanged ticks do not broadcast or recreate the lobby", regions.Revision == revision);
 
         SetPhase("Generating");
-        Check("lobby remains protected during arena generation", regions.FindManaged(Key) != null);
+        Check("generation disables lobby protection so it cannot veto terrain or object placement", regions.FindManaged(Key) == null
+            && regions.AllowsTile(215, 95, RegionField.CanUseItems));
         SetPhase("FreezeCountdown");
         Check("countdown immediately hides lobby protection", regions.FindManaged(Key) == null
             && regions.Regions.Count == 1 && regions.AllowsTile(215, 95, RegionField.CanUseItems));

@@ -16,6 +16,8 @@ internal sealed class ArenaTemplate : ModSystem
     private static Sign[] signs;
     private static byte[][] entities;
     private static double surface, rock;
+    private static Point spawn, dungeon;
+    private static bool crimson;
     internal static bool Available => tiles != null;
 
     public override void OnWorldLoad()
@@ -25,6 +27,7 @@ internal sealed class ArenaTemplate : ModSystem
             || Main.maxTilesY != ArenaWorldSystem.Height)
             return;
         ArenaWorldSystem.ConfigureAuthoredLayers();
+        NormalizeAuthoredFrames();
         // Tilemap.Height is the memory stride, not the loaded world's height. Terraria
         // can retain a 2401-row allocation for this 600-row world. Store only live tiles.
         tiles = CurrentTiles().Select(array =>
@@ -45,6 +48,9 @@ internal sealed class ArenaTemplate : ModSystem
         }).ToArray();
         surface = Main.worldSurface;
         rock = Main.rockLayer;
+        spawn = new Point(Main.spawnTileX, Main.spawnTileY);
+        dungeon = new Point(Main.dungeonX, Main.dungeonY);
+        crimson = WorldGen.crimson;
         Log.Debug($"[worldgen] PASS | Template captured | Tiles: {Main.maxTilesX * Main.maxTilesY} | "
             + $"World: {Main.maxTilesX}x{Main.maxTilesY} | TileStorage: {Main.tile.Width}x{Main.tile.Height}");
     }
@@ -58,6 +64,11 @@ internal sealed class ArenaTemplate : ModSystem
 
         Main.worldSurface = surface;
         Main.rockLayer = rock;
+        Main.spawnTileX = spawn.X;
+        Main.spawnTileY = spawn.Y;
+        Main.dungeonX = dungeon.X;
+        Main.dungeonY = dungeon.Y;
+        WorldGen.crimson = crimson;
         RestoreEntities(protectedLobby);
         Array[] current = CurrentTiles();
         protectedLobby = Rectangle.Intersect(protectedLobby, new Rectangle(0, 0, Main.maxTilesX, Main.maxTilesY));
@@ -83,6 +94,25 @@ internal sealed class ArenaTemplate : ModSystem
         }
         if (Main.netMode == NetmodeID.Server)
             Liquid.ReInit();
+    }
+
+    private static void NormalizeAuthoredFrames()
+    {
+        // TileSection clients reframe the complete map. The authored file contains some
+        // unsupported vines/torches which that vanilla pass removes. Normalize once before
+        // capture so the authoritative template already matches the playable client world.
+        // Match SectionTileFrame's bounds/order without its client-only sectionManager.
+        bool previousMapUpdate = WorldGen.noMapUpdate;
+        try
+        {
+            WorldGen.noMapUpdate = true;
+            for (int x = 0; x < Main.maxTilesX - 1; x++)
+            for (int y = 0; y < Main.maxTilesY - 1; y++)
+                WorldGen.Reframe(x, y, resetFrame: true);
+        }
+        finally { WorldGen.noMapUpdate = previousMapUpdate; }
+        Liquid.ReInit();
+        Log.Debug("[worldgen] PASS | Authored world normalized before template capture | Client framing: vanilla");
     }
 
     /// <summary>Checks every restored tile component; preserved lobby tiles are explicitly excluded.</summary>

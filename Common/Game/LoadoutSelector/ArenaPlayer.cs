@@ -126,15 +126,17 @@ internal sealed class ArenaPlayer : ModPlayer
             Player.velocity = Vector2.Zero;
         }
 
-        if (manager.CurrentPhase == RoundManager.RoundPhase.Generating && Main.netMode == NetmodeID.Server)
+        if (manager.CurrentPhase == RoundManager.RoundPhase.Generating)
         {
-            if (!generationStaged)
+            if (!generationStaged && Main.netMode == NetmodeID.Server)
                 Stage(Player, manager.StagingSpawn);
+            Player.breath = Player.breathMax;
+            Player.noFallDmg = true;
             Vector2 position = SpawnPosition(Player, manager.StagingSpawn);
             if (!Player.dead && Player.position != position)
             {
                 Player.position = position;
-                RegionTeleportSystem.Synchronize(Player);
+                Player.fallStart = (int)(position.Y / 16f);
             }
         }
 
@@ -177,7 +179,10 @@ internal sealed class ArenaPlayer : ModPlayer
             return false;
         }
 
-        ArenaTileSync.Send(layout.ArenaBounds, player.whoAmI);
+        // Transition participants already acknowledged the entire world. A late join still
+        // receives the fight area here before teleporting out of its initially loaded sections.
+        if (ModContent.GetInstance<RoundManager>().CurrentPhase != RoundManager.RoundPhase.Generating)
+            ArenaTileSync.Send(layout.ArenaBounds, player.whoAmI);
         ArenaPlayer arenaPlayer = player.GetModPlayer<ArenaPlayer>();
         arenaPlayer.SetArenaSpawn(spawn);
         arenaPlayer.Revive();

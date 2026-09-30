@@ -9,7 +9,7 @@ namespace PvPArenas.Common.Generation;
 
 internal readonly record struct JungleChamber(Point Center, int RadiusX, int RadiusY);
 
-/// <summary>Turns native cave topology into a connected, irregular underground jungle.</summary>
+/// <summary>Seed-only density field, scored landmark reservations, and a connected network of winding caves.</summary>
 internal sealed class JungleArenaPlan
 {
     private const byte Open = 1, Route = 2, Ground = 4, Grass = 8, Water = 16;
@@ -30,24 +30,12 @@ internal sealed class JungleArenaPlan
         area = Rectangle.Intersect(layout.ArenaBounds, new Rectangle(0, 0, width, Main.maxTilesY));
         tiles = new byte[width * Main.maxTilesY];
         UnifiedRandom random = new(seed ^ 0x53A71);
-        // Placement envelopes reserve routes, not rectangular chunks of solid terrain.
-        Point[] sites = [new(145, 215), new(320, 145), new(120, 335), new(260, 340)];
-        Point[] sizes = [new(29, 23), new(30, 40), new(15, 11), new(17, 12)];
-        List<JungleChamber> chambers = [];
-        landmarks = new Rectangle[sites.Length];
-        for (int i = 0; i < sites.Length; i++)
-        {
-            Point center = sites[i] + new Point(random.Next(-5, 6), random.Next(-5, 6));
-            Rectangle envelope = new(center.X - sizes[i].X, center.Y - sizes[i].Y, sizes[i].X * 2 + 1, sizes[i].Y * 2 + 1);
-            Rectangle guarded = envelope;
-            guarded.Inflate(2, 2);
-            if (!area.Contains(envelope) || guarded.Intersects(protectedArea))
-                throw new InvalidOperationException("The occupied lobby overlaps a Jungle landmark. Move the lobby before generating this arena.");
-            chambers.Add(new(center, sizes[i].X, sizes[i].Y));
-            landmarks[i] = envelope;
-        }
+        ShapeCaves();
+        // Evaluate the actual density before reserving structures. Candidates are finite and cannot retry forever.
+        List<JungleChamber> chambers = PlanLandmarks(layout);
         Chambers = chambers;
-        ShapeNativeCaves();
+        landmarks = chambers.Select(room => new Rectangle(room.Center.X - room.RadiusX, room.Center.Y - room.RadiusY,
+            room.RadiusX * 2 + 1, room.RadiusY * 2 + 1)).ToArray();
 
         List<Point> nodes = [];
         for (int row = 0; row < 3; row++)
@@ -85,8 +73,14 @@ internal sealed class JungleArenaPlan
         for (int y = spawn.Y; y < spawn.Y + 7; y++)
         for (int x = spawn.X - 4; x <= spawn.X + 4; x++)
             if (Math.Abs(x - spawn.X) <= Math.Max(1, 4 - (y - spawn.Y) / 2)) Mark(x, y, Ground);
-        for (int x = layout.BossSpawn.X - 4; x <= layout.BossSpawn.X; x++)
-        for (int y = layout.BossSpawn.Y - 5; y <= layout.BossSpawn.Y + 5; y++) Mark(x, y, Open | Route);
+        // Neutral world-spawn ledge below the boss approach survives reflection across the center seam.
+        for (int x = layout.BossSpawn.X - 5; x <= layout.BossSpawn.X; x++)
+        {
+            for (int y = layout.BossSpawn.Y - 5; y < layout.BossSpawn.Y + 10; y++) Mark(x, y, Open | Route);
+            for (int y = layout.BossSpawn.Y + 10; y < layout.BossSpawn.Y + 14; y++) Mark(x, y, Ground);
+        }
+
+        RemoveIsolatedPockets(new Point(spawn.X, spawn.Y - 3));
 
         for (int y = area.Top; y < area.Bottom; y++)
         for (int x = area.Left; x < area.Right; x++)
@@ -96,22 +90,74 @@ internal sealed class JungleArenaPlan
         AddPools();
     }
 
-    private void ShapeNativeCaves()
+    private void ShapeCaves()
     {
-        Point[] neighbors = [new(-12, 0), new(12, 0), new(0, -12), new(0, 12)];
         for (int y = area.Top; y < area.Bottom; y++)
         for (int x = area.Left; x < area.Right; x++)
         {
             if (protectedArea.Contains(x, y)) continue;
-            Tile tile = Main.tile[x, y];
-            int nearbyRock = 0;
-            foreach (Point offset in neighbors)
-                if (WorldGen.SolidTile(Math.Clamp(x + offset.X, 1, Main.maxTilesX - 2), Math.Clamp(y + offset.Y, 1, Main.maxTilesY - 2))) nearbyRock++;
-            bool nativeCave = !WorldGen.SolidTile(x, y) && (tile.WallType != WallID.None || nearbyRock >= 2);
             float wx = x + Noise(x, y, 67, 3) * 17, wy = y + Noise(x, y, 61, 7) * 15;
-            float cavity = Noise(wx, wy, 27, 11) * .60f + Noise(wx, wy, 11, 19) * .28f + Noise(wx, wy, 4, 31) * .12f;
-            if (cavity > (nativeCave ? -.22f : .18f)) tiles[Index(x, y)] = Open;
+            float cavity = Noise(wx, wy, 29, 11) * .60f + Noise(wx, wy, 12, 19) * .28f + Noise(wx, wy, 4, 31) * .12f;
+            int border = Math.Min(y - area.Top, Math.Min(area.Bottom - 1 - y, x - area.Left));
+            if (cavity > -.06f + Math.Max(0, 7 - border) * .08f) tiles[Index(x, y)] = Open;
         }
+    }
+
+    private List<JungleChamber> PlanLandmarks(ArenaLayout layout)
+    {
+        Point[] preferred = [new(145, 215), new(320, 145), new(120, 335), new(300, 340)];
+        Point[] sizes = [new(29, 23), new(30, 40), new(19, 14), new(19, 15)];
+        List<JungleChamber> result = [];
+        List<Rectangle> reserved = [];
+        Rectangle spawn = new(layout.RedSpawn.X - 18, layout.RedSpawn.Y - 18, 37, 37);
+        for (int kind = 0; kind < sizes.Length; kind++)
+        {
+            Point size = sizes[kind], best = default;
+            float bestScore = float.MinValue;
+            for (int y = area.Top + size.Y + 7; y < area.Bottom - size.Y - 7; y += 4)
+            for (int x = area.Left + size.X + 7; x < area.Right - size.X - 12; x += 4)
+            {
+                Rectangle envelope = new(x - size.X, y - size.Y, size.X * 2 + 1, size.Y * 2 + 1);
+                Rectangle guard = envelope; guard.Inflate(12, 12);
+                if (guard.Intersects(protectedArea) || guard.Intersects(spawn) || reserved.Any(guard.Intersects)) continue;
+                int open = 0, samples = 0, foundation = 0;
+                for (int sx = envelope.Left + 3; sx < envelope.Right - 3; sx += 5)
+                for (int sy = envelope.Top + 3; sy < envelope.Bottom - 3; sy += 5)
+                { samples++; if (IsOpen(sx, sy)) open++; }
+                for (int sx = envelope.Left; sx < envelope.Right; sx += 3)
+                    if (!IsOpen(sx, envelope.Bottom - 2)) foundation++;
+                // Fit a landmark into an existing pocket, with rock under it and useful separation from the others.
+                float score = open * 120f / Math.Max(1, samples) + foundation * 1.3f
+                    - Vector2.Distance(new Vector2(x, y), preferred[kind].ToVector2()) * .75f
+                    + Noise(x, y, 19, 97 + kind) * 8;
+                if (score <= bestScore) continue;
+                bestScore = score; best = new(x, y);
+            }
+            if (bestScore == float.MinValue)
+                throw new InvalidOperationException("No safe Jungle landmark footprint fits in the available arena.");
+            result.Add(new(best, size.X, size.Y));
+            reserved.Add(new(best.X - size.X, best.Y - size.Y, size.X * 2 + 1, size.Y * 2 + 1));
+        }
+        return result;
+    }
+
+    private void RemoveIsolatedPockets(Point start)
+    {
+        bool[] reached = new bool[tiles.Length];
+        Queue<Point> queue = new();
+        queue.Enqueue(start); reached[Index(start.X, start.Y)] = true;
+        Point[] directions = [new(-1, 0), new(1, 0), new(0, -1), new(0, 1)];
+        while (queue.TryDequeue(out Point current))
+        foreach (Point direction in directions)
+        {
+            Point next = current + direction;
+            if (!IsOpen(next.X, next.Y) || reached[Index(next.X, next.Y)]) continue;
+            reached[Index(next.X, next.Y)] = true; queue.Enqueue(next);
+        }
+        for (int y = area.Top; y < area.Bottom; y++)
+        for (int x = area.Left; x < area.Right; x++)
+            if (!reached[Index(x, y)] && !landmarks.Any(rect => rect.Contains(x, y)))
+                tiles[Index(x, y)] &= unchecked((byte)~Open);
     }
 
     private bool FindPocket(Point site, UnifiedRandom random, out Point pocket)
