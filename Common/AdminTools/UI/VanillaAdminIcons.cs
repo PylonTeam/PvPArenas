@@ -34,79 +34,6 @@ internal static class VanillaAdminIcons
     internal static AdminUIIcon PlayPause => UI("IconPlayPause");
     internal static AdminUIIcon Pause => UI("IconMismatchPause");
     internal static AdminUIIcon MixedSeed => UI("IconMixedSeed");
-    internal static AdminUIIcon NewlyGenerated => UI("IconNewlyGenerated");
-    internal static AdminUIIcon Reset => UI("IconReset");
-    internal static AdminUIIcon Snapshot => UI("IconSnapshot");
-    internal static AdminUIIcon Rank => UI("Bestiary/Icon_Rank_Light");
-    internal static AdminUIIcon Reforge => UI("Reforge_1");
-    internal static AdminUIIcon Camera => UI("Camera_1");
-    internal static AdminUIIcon Warning => UI("UI_quickicon1");
-    internal static AdminUIIcon WorldSize => UI("WorldCreation/IconSizeLarge");
-    internal static AdminUIIcon Difficulty => UI("WorldCreation/IconDifficultyExpert");
-
-    internal static AdminUIIcon Info(int index) => UI($"InfoIcon_{Math.Clamp(index, 0, 13)}");
-    internal static AdminUIIcon Tag(int column, int row) => Frame("Bestiary/Icon_Tags_Shadow", 16, 5, column, row);
-    internal static AdminUIIcon InfiniteCategory(int index) => Frame("Creative/Infinite_Icons", 9, 1, index, 0);
-
-    internal static AdminUIIcon ForPass(string name)
-    {
-        if (Has(name, "Reset") || Has(name, "Cleanup")) return Reset;
-        if (Has(name, "Floating") || Has(name, "Cloud") || Has(name, "Sky")) return Tag(8, 1);
-        if (Has(name, "Dungeon")) return Tag(0, 1);
-        if (Has(name, "Hive") || Has(name, "Bee")) return Tag(1, 2);
-        if (Has(name, "Jungle") || Has(name, "Mud") || Has(name, "Temple")) return Tag(0, 0);
-        if (Has(name, "Ice") || Has(name, "Snow") || Has(name, "Glacier")) return Tag(10, 1);
-        if (Has(name, "Desert") || Has(name, "Sand") || Has(name, "Pyramid") || Has(name, "Oasis")) return Tag(4, 0);
-        if (Has(name, "Ocean") || Has(name, "Beach") || Has(name, "Water")) return Info(1);
-        if (Has(name, "Underworld") || Has(name, "Hell") || Has(name, "Lava")) return Tag(12, 1);
-        if (Has(name, "Mushroom")) return Tag(9, 2);
-        if (Has(name, "Corrupt") || Has(name, "Evil") || Has(name, "Shadow")) return Tag(7, 0);
-        if (Has(name, "Crimson") || Has(name, "Blood")) return Tag(11, 0);
-        if (Has(name, "Gem") || Has(name, "Ore") || Has(name, "Shin") || Has(name, "Crystal")) return NewlyGenerated;
-        if (Has(name, "Tree") || Has(name, "Plant") || Has(name, "Flower") || Has(name, "Herb")) return Tag(0, 0);
-        if (Has(name, "Wall") || Has(name, "Rock") || Has(name, "Stone") || Has(name, "Dirt") || Has(name, "Clay")) return Tag(1, 0);
-        if (Has(name, "Wire") || Has(name, "Trap")) return Reforge;
-        return MixedSeed;
-    }
-
-    internal static AdminUIIcon ForCleanup(WorldGenManager.WorldClearAction action) => action switch
-    {
-        WorldGenManager.WorldClearAction.Tiles => Tag(1, 0),
-        WorldGenManager.WorldClearAction.Walls => Tag(2, 0),
-        WorldGenManager.WorldClearAction.Liquids => Info(1),
-        WorldGenManager.WorldClearAction.Wiring => Reforge,
-        WorldGenManager.WorldClearAction.PaintAndCoatings => InfiniteCategory(6),
-        WorldGenManager.WorldClearAction.Everything => Warning,
-        _ => Reset
-    };
-
-    internal static AdminUIIcon ForVisual(WorldGenManager.WorldVisualLayer layer) => layer switch
-    {
-        WorldGenManager.WorldVisualLayer.Background => Tag(0, 0),
-        WorldGenManager.WorldVisualLayer.Clouds => Tag(8, 1),
-        WorldGenManager.WorldVisualLayer.Sky => Info(1),
-        WorldGenManager.WorldVisualLayer.SunAndMoon => Tag(4, 1),
-        WorldGenManager.WorldVisualLayer.Stars => NewlyGenerated,
-        _ => Camera
-    };
-
-    internal static AdminUIIcon ForDebugSection(string title) => title switch
-    {
-        "WORLD" => MixedSeed,
-        "LAYERS" => WorldSize,
-        "GEN VARS" => NewlyGenerated,
-        "WORLDGEN FLAGS" => Warning,
-        "TILE SCAN" => Snapshot,
-        "LIQUIDS" => Info(1),
-        "WIRING + SHAPE" => Reforge,
-        "TOP TILES" => Tag(1, 0),
-        "TOP WALLS" => Tag(2, 0),
-        "ENTITIES" => Tag(15, 3),
-        "NEARBY BIOME" => Tag(0, 0),
-        "HOVERED TILE" => Info(13),
-        _ => Info(4)
-    };
-
     internal static void DrawFitted(SpriteBatch spriteBatch, AdminUIIcon icon, Rectangle box,
         Color color, bool allowUpscale = false)
     {
@@ -141,6 +68,4 @@ internal static class VanillaAdminIcons
         return new AdminUIIcon(asset, columns, rows, column, row);
     }
 
-    private static bool Has(string name, string value) =>
-        name?.Contains(value, StringComparison.OrdinalIgnoreCase) == true;
 }

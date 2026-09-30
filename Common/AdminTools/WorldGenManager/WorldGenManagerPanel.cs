@@ -8,697 +8,264 @@ using Terraria.Audio;
 using Terraria.GameContent;
 using Terraria.GameContent.UI.Elements;
 using Terraria.ID;
+using Terraria.Localization;
 using Terraria.UI;
 
 namespace PvPArenas.Common.AdminTools.WorldGenManager;
 
 internal sealed class WorldGenManagerPanel : UIDraggablePanel
 {
-    private enum Section
-    {
-        Passes,
-        World,
-        Visuals,
-        Debug
-    }
-
     private readonly UIList passList;
-    private readonly UIElement pageHost;
-    private readonly Dictionary<Section, UIElement> pages = [];
-    private readonly HashSet<string> selectedPasses = new(StringComparer.OrdinalIgnoreCase);
-    private Section activeSection;
-    private string armedSelection;
-    private WorldClearAction? armedAction;
-    private uint armedUntil;
+    private readonly UIPanel searchPanel;
+    private readonly UISearchBar search;
+    private readonly HashSet<string> selected = new(StringComparer.OrdinalIgnoreCase);
+    private string[] displayedPasses = [];
+    private string filter = "";
+    private string error = "";
+    private bool rebuild;
 
-    protected override float MinResizeW => 980f;
-    protected override float MinResizeH => 650f;
-    protected override float MaxResizeW => 1600f;
-    protected override float MaxResizeH => 1050f;
+    protected override float MinResizeW => 360f;
+    protected override float MinResizeH => 320f;
+    protected override float MaxResizeW => 600f;
+    protected override float MaxResizeH => 800f;
+    private static WorldGenPassRunner Runner => ModContent.GetInstance<WorldGenPassRunner>();
+    private static bool CanEdit => Runner.Available && !Runner.Busy;
 
-    internal WorldGenManagerPanel() : base("World Gen Manager")
+    internal WorldGenManagerPanel() : base("World Generation")
     {
-        Width.Set(1280f, 0f);
-        Height.Set(840f, 0f);
+        Width.Set(440f, 0f);
+        Height.Set(500f, 0f);
         HAlign = .5f;
-        Top.Set(35f, 0f);
-        Content.SetPadding(12f);
+        VAlign = 0f;
+        Top.Set(80f, 0f);
+        Content.SetPadding(10f);
 
-        WorldGenSummary summary = new()
+        searchPanel = new UIPanel
         {
-            Width = { Percent = 1f },
-            Height = { Pixels = 112f }
+            Width = { Pixels = -112f, Percent = 1f },
+            Height = { Pixels = 32f },
+            BackgroundColor = new Color(19, 27, 57),
+            BorderColor = new Color(65, 84, 140)
         };
-        Content.Append(summary);
-
-        UIElement tabs = new()
+        searchPanel.SetPadding(0f);
+        search = new UISearchBar(Language.GetOrRegister("Mods.PvPArenas.Tools.WorldGenManager.Search", () => "Search passes"), .72f)
         {
-            Top = { Pixels = 122f },
-            Width = { Percent = 1f },
-            Height = { Pixels = 44f }
-        };
-        Content.Append(tabs);
-
-        AddTab(tabs, Section.Passes, "GENERATION PASSES", "Choose one or more numbered vanilla passes", VanillaAdminIcons.MixedSeed);
-        AddTab(tabs, Section.World, "WORLD CLEANUP", "Clear tiles, walls, liquids, wiring, paint, or everything", VanillaAdminIcons.Reforge);
-        AddTab(tabs, Section.Visuals, "VISUALS", "Locally hide scenery while inspecting the world", VanillaAdminIcons.Camera);
-        AddTab(tabs, Section.Debug, "DEBUG INFO", "Compact live world data arranged in columns", VanillaAdminIcons.Info(4));
-
-        pageHost = new UIElement
-        {
-            Top = { Pixels = 176f },
-            Width = { Percent = 1f },
-            Height = { Pixels = -176f, Percent = 1f }
-        };
-        Content.Append(pageHost);
-
-        pages[Section.Passes] = BuildPassesPage(out passList);
-        pages[Section.World] = BuildWorldPage();
-        pages[Section.Visuals] = BuildVisualsPage();
-        pages[Section.Debug] = new WorldGenDebugView
-        {
-            Width = { Percent = 1f },
+            Left = { Pixels = 8f },
+            Width = { Pixels = -16f, Percent = 1f },
             Height = { Percent = 1f }
         };
+        search.OnContentsChanged += text => { filter = text ?? ""; rebuild = true; };
+        search.OnStartTakingInput += () => Main.blockInput = true;
+        search.OnEndTakingInput += () => Main.blockInput = false;
+        search.SetContents("");
+        searchPanel.OnLeftClick += (_, _) =>
+        {
+            if (CanEdit && !search.IsWritingText)
+                search.ToggleTakingText();
+        };
+        searchPanel.OnRightClick += (_, _) => { if (CanEdit) search.SetContents(""); };
+        searchPanel.Append(search);
+        Content.Append(searchPanel);
 
+        Content.Append(Button(() => "All", () => CanEdit, () =>
+        {
+            selected.UnionWith(Runner.PassNames);
+            error = "";
+        }, -106f, 1f, 0f, 0f, 50f, 0f, 32f));
+        Content.Append(Button(() => "None", () => CanEdit && selected.Count > 0, () =>
+        {
+            selected.Clear();
+            error = "";
+        }, -50f, 1f, 0f, 0f, 50f, 0f, 32f));
+
+        UIPanel listPanel = new()
+        {
+            Top = { Pixels = 40f },
+            Width = { Percent = 1f },
+            Height = { Pixels = -120f, Percent = 1f },
+            BackgroundColor = new Color(16, 22, 48),
+            BorderColor = new Color(65, 84, 140)
+        };
+        listPanel.SetPadding(6f);
+        passList = new UIList
+        {
+            Width = { Pixels = -23f, Percent = 1f },
+            Height = { Percent = 1f },
+            ListPadding = 3f,
+            ManualSortMethod = _ => { }
+        };
+        UIScrollbar scrollbar = new()
+        {
+            HAlign = 1f,
+            Width = { Pixels = 20f },
+            Height = { Percent = 1f }
+        };
+        passList.SetScrollbar(scrollbar);
+        listPanel.Append(passList);
+        listPanel.Append(scrollbar);
+        Content.Append(listPanel);
+
+        Content.Append(Button(() => Runner.Busy ? "Running…" : selected.Count == 0 ? "Run" : $"Run ({selected.Count})",
+            () => CanEdit && selected.Count > 0, RunSelected,
+            0f, 0f, -72f, 1f, 0f, 1f, 38f, () => VanillaAdminIcons.PlayPause));
+        Content.Append(new StatusLine(() => string.IsNullOrEmpty(error) ? Runner.Status : error)
+        {
+            Top = { Pixels = -28f, Percent = 1f },
+            Width = { Percent = 1f },
+            Height = { Pixels = 26f }
+        });
         RebuildList();
-        ShowSection(Section.Passes);
     }
 
     protected override void OnClosePanelLeftClick() => ModContent.GetInstance<WorldGenManagerUISystem>().Close();
 
     protected override void OnRefreshPanelLeftClick()
     {
-        RebuildList();
+        error = "";
         WorldGenManagerNetHandler.RequestStatus();
     }
 
-    private WorldGenPassRunner Runner => ModContent.GetInstance<WorldGenPassRunner>();
-
-    private UIElement BuildPassesPage(out UIList list)
+    internal void ReleaseInput()
     {
-        UIElement page = FullPage();
-        page.Append(SectionTitle("Generation passes", "Select any number of passes. They always run top-to-bottom in the numbered vanilla order."));
-
-        page.Append(CommandButton(() => "Tested only", () => "Select the passes explicitly tested for live-world use",
-            () => !Runner.Busy, () => false, SelectTested, 0f, 58f, .16f, () => VanillaAdminIcons.Rank));
-        page.Append(CommandButton(() => "Select all", () => "Select every vanilla pass; risky passes still require confirmation",
-            () => !Runner.Busy, () => false, SelectAll, .17f, 58f, .16f, () => VanillaAdminIcons.MixedSeed));
-        page.Append(CommandButton(() => "Clear selection", () => "Uncheck every generation pass",
-            () => !Runner.Busy && selectedPasses.Count > 0, () => false, ClearSelection, .34f, 58f, .16f, () => VanillaAdminIcons.Reset));
-
-        ArenaGameCommandButton run = CommandButton(RunLabel, RunTooltip,
-            () => !Runner.Busy && selectedPasses.Count > 0,
-            () => SelectedInOrder().Any(WorldGenPassRunner.IsDangerous),
-            RunSelected, .52f, 58f, .48f, () => VanillaAdminIcons.PlayPause);
-        page.Append(run);
-
-        UIPanel listPanel = new()
-        {
-            Top = { Pixels = 108f },
-            Width = { Percent = 1f },
-            Height = { Pixels = -108f, Percent = 1f },
-            BackgroundColor = new Color(16, 22, 52) * .96f,
-            BorderColor = new Color(78, 104, 190) * .8f
-        };
-        listPanel.SetPadding(8f);
-        page.Append(listPanel);
-
-        list = new UIList
-        {
-            Width = { Pixels = -28f, Percent = 1f },
-            Height = { Percent = 1f },
-            ListPadding = 2f,
-            ManualSortMethod = _ => { }
-        };
-        UIScrollbar scrollbar = new()
-        {
-            Left = { Pixels = -20f, Percent = 1f },
-            Width = { Pixels = 20f },
-            Height = { Percent = 1f }
-        };
-        list.SetScrollbar(scrollbar);
-        listPanel.Append(list);
-        listPanel.Append(scrollbar);
-        return page;
+        if (search.IsWritingText)
+            search.ToggleTakingText();
     }
 
-    private UIElement BuildWorldPage()
+    public override void Update(GameTime gameTime)
     {
-        UIElement page = FullPage();
-        page.Append(SectionTitle("World cleanup", "Every action creates a backup, pauses gameplay, saves, and resends all world sections to multiplayer clients."));
-
-        WorldClearAction[] actions = Enum.GetValues<WorldClearAction>();
-        for (int i = 0; i < actions.Length; i++)
-        {
-            WorldClearAction action = actions[i];
-            int column = i % 2;
-            int row = i / 2;
-            page.Append(new WorldCleanupCard(action, () => IsActionArmed(action), () => !Runner.Busy,
-                () => RequestClear(action))
-            {
-                Left = { Pixels = column == 0 ? 0f : 8f, Percent = column * .5f },
-                Top = { Pixels = 64f + row * 112f },
-                Width = { Pixels = -8f, Percent = .5f },
-                Height = { Pixels = 102f }
-            });
-        }
-        return page;
-    }
-
-    private static UIElement BuildVisualsPage()
-    {
-        UIElement page = FullPage();
-        page.Append(SectionTitle("Visual inspection", "These switches affect only this client and do not change or save the world."));
-
-        page.Append(CommandButton(() => "Show all scenery", () => "Enable every scenery layer",
-            () => true, () => false, () => WorldGenVisualSystem.SetAll(true), 0f, 58f, .24f, () => VanillaAdminIcons.Rank));
-        page.Append(CommandButton(() => "Hide all scenery", () => "Disable every listed scenery layer",
-            () => true, () => false, () => WorldGenVisualSystem.SetAll(false), .25f, 58f, .24f, () => VanillaAdminIcons.Camera));
-
-        (WorldVisualLayer Layer, string Label, string Description)[] layers =
-        [
-            (WorldVisualLayer.Background, "Background", "Surface and cavern background artwork"),
-            (WorldVisualLayer.Clouds, "Clouds", "Surface cloud sprites"),
-            (WorldVisualLayer.Sky, "Sky color", "The solid sky-color draw behind scenery"),
-            (WorldVisualLayer.SunAndMoon, "Sun and moon", "Celestial bodies and their vanilla draw pass"),
-            (WorldVisualLayer.Stars, "Stars", "The star field drawn behind the world")
-        ];
-
-        for (int i = 0; i < layers.Length; i++)
-        {
-            int column = i % 2;
-            int row = i / 2;
-            var item = layers[i];
-            page.Append(new WorldVisualToggle(item.Layer, item.Label, item.Description)
-            {
-                Left = { Pixels = column == 0 ? 0f : 8f, Percent = column * .5f },
-                Top = { Pixels = 112f + row * 86f },
-                Width = { Pixels = -8f, Percent = .5f },
-                Height = { Pixels = 76f }
-            });
-        }
-        return page;
-    }
-
-    private void AddTab(UIElement parent, Section section, string label, string tooltip, AdminUIIcon icon)
-    {
-        int index = (int)section;
-        parent.Append(new WorldGenTabButton(label, tooltip, icon, () => activeSection == section, () => ShowSection(section))
-        {
-            Left = { Pixels = index == 0 ? 0f : 5f, Percent = index * .25f },
-            Width = { Pixels = -5f, Percent = .25f },
-            Height = { Percent = 1f }
-        });
-    }
-
-    private void ShowSection(Section section)
-    {
-        activeSection = section;
-        pageHost.RemoveAllChildren();
-        pageHost.Append(pages[section]);
-        if (section == Section.Debug)
-            ModContent.GetInstance<WorldGenDebugStats>().RestartScan();
+        base.Update(gameTime);
+        if (search.IsWritingText && (!CanEdit || Main.mouseLeft && !searchPanel.IsMouseHovering))
+            ReleaseInput();
+        searchPanel.BorderColor = search.IsWritingText ? new Color(151, 189, 255) : new Color(65, 84, 140);
+        if (rebuild || !displayedPasses.SequenceEqual(Runner.PassNames))
+            RebuildList();
     }
 
     private void RebuildList()
     {
+        rebuild = false;
+        displayedPasses = Runner.PassNames.ToArray();
+        selected.IntersectWith(displayedPasses);
         passList.Clear();
-        IReadOnlyList<string> names = Runner.PassNames;
-        selectedPasses.RemoveWhere(pass => !names.Contains(pass, StringComparer.OrdinalIgnoreCase));
-        for (int index = 0; index < names.Count; index++)
+        for (int i = 0; i < displayedPasses.Length; i++)
         {
-            string name = names[index];
-            passList.Add(new WorldGenPassRow(index + 1, name,
-                () => selectedPasses.Contains(name),
-                () => SelectedRunIndex(name),
-                () => TogglePass(name)));
+            string name = displayedPasses[i];
+            if (name.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                passList.Add(new PassRow(i + 1, name, () => selected.Contains(name), () =>
+                {
+                    if (!selected.Add(name))
+                        selected.Remove(name);
+                    error = "";
+                }));
         }
-    }
-
-    private void TogglePass(string name)
-    {
-        if (!selectedPasses.Add(name))
-            selectedPasses.Remove(name);
-        Disarm();
-    }
-
-    private void SelectTested()
-    {
-        selectedPasses.Clear();
-        foreach (string pass in Runner.PassNames.Where(WorldGenPassRunner.IsTested))
-            selectedPasses.Add(pass);
-        Disarm();
-    }
-
-    private void SelectAll()
-    {
-        selectedPasses.Clear();
-        foreach (string pass in Runner.PassNames)
-            selectedPasses.Add(pass);
-        Disarm();
-    }
-
-    private void ClearSelection()
-    {
-        selectedPasses.Clear();
-        Disarm();
-    }
-
-    private string[] SelectedInOrder() => Runner.PassNames.Where(selectedPasses.Contains).ToArray();
-
-    private int SelectedRunIndex(string name)
-    {
-        int index = 0;
-        foreach (string pass in Runner.PassNames)
-        {
-            if (!selectedPasses.Contains(pass))
-                continue;
-            index++;
-            if (pass.Equals(name, StringComparison.OrdinalIgnoreCase))
-                return index;
-        }
-        return 0;
+        if (passList.Count == 0 && Runner.Available)
+            passList.Add(new UIText("No matching passes", .72f) { Height = { Pixels = 28f } });
     }
 
     private void RunSelected()
     {
-        string[] passes = SelectedInOrder();
-        string signature = string.Join('\n', passes);
-        bool dangerous = passes.Any(WorldGenPassRunner.IsDangerous);
-        if (dangerous && !(armedSelection == signature && Main.GameUpdateCount <= armedUntil))
+        ReleaseInput();
+        string[] passes = Runner.PassNames.Where(selected.Contains).ToArray();
+        WorldGenManagerNetHandler.RequestRunPasses(passes, out error);
+    }
+
+    private static ArenaGameCommandButton Button(Func<string> label, Func<bool> enabled, Action action,
+        float left, float leftPercent, float top, float topPercent, float width, float widthPercent, float height,
+        Func<AdminUIIcon> icon = null) => new(label, () => "", enabled, () => false, action, icon)
         {
-            armedSelection = signature;
-            armedAction = null;
-            armedUntil = Main.GameUpdateCount + 300;
-            Main.NewText($"{passes.Count(WorldGenPassRunner.IsDangerous)} risky pass(es) selected. Click CONFIRM within 5 seconds.", Color.OrangeRed);
-            return;
-        }
-
-        Disarm();
-        if (!WorldGenManagerNetHandler.RequestRunPasses(passes, out string error))
-            Main.NewText(error, Color.OrangeRed);
-    }
-
-    private void RequestClear(WorldClearAction action)
-    {
-        if (!IsActionArmed(action))
-        {
-            armedAction = action;
-            armedSelection = null;
-            armedUntil = Main.GameUpdateCount + 300;
-            Main.NewText($"{WorldGenPassRunner.ClearActionName(action)} is destructive. Click the same card within 5 seconds to confirm.", Color.OrangeRed);
-            return;
-        }
-
-        Disarm();
-        if (!WorldGenManagerNetHandler.RequestClear(action, out string error))
-            Main.NewText(error, Color.OrangeRed);
-    }
-
-    private string RunLabel()
-    {
-        string[] passes = SelectedInOrder();
-        if (passes.Length == 0)
-            return "Select generation passes";
-        string signature = string.Join('\n', passes);
-        return armedSelection == signature && Main.GameUpdateCount <= armedUntil
-            ? $"CONFIRM {passes.Length} PASS{(passes.Length == 1 ? "" : "ES")}"
-            : $"RUN {passes.Length} PASS{(passes.Length == 1 ? "" : "ES")} IN ORDER";
-    }
-
-    private string RunTooltip()
-    {
-        if (Runner.Busy)
-            return Runner.Status;
-        string[] passes = SelectedInOrder();
-        if (passes.Length == 0)
-            return "Check one or more numbered passes below";
-        int risky = passes.Count(WorldGenPassRunner.IsDangerous);
-        return risky > 0
-            ? $"Runs top-to-bottom with one backup. {risky} risky pass(es) require a second click."
-            : "Runs the selected tested passes top-to-bottom with one automatic backup.";
-    }
-
-    private bool IsActionArmed(WorldClearAction action) => armedAction == action && Main.GameUpdateCount <= armedUntil;
-
-    private void Disarm()
-    {
-        armedSelection = null;
-        armedAction = null;
-    }
-
-    private static UIElement FullPage() => new()
-    {
-        Width = { Percent = 1f },
-        Height = { Percent = 1f }
-    };
-
-    private static UIElement SectionTitle(string title, string subtitle)
-    {
-        UIElement header = new()
-        {
-            Width = { Percent = 1f },
-            Height = { Pixels = 54f }
+            Left = { Pixels = left, Percent = leftPercent },
+            Top = { Pixels = top, Percent = topPercent },
+            Width = { Pixels = width, Percent = widthPercent },
+            Height = { Pixels = height }
         };
-        header.Append(new UIText(title, .95f, true)
+
+    private sealed class PassRow : UIElement
+    {
+        private readonly int order;
+        private readonly string name;
+        private readonly Func<bool> isSelected;
+        private readonly Action toggle;
+
+        internal PassRow(int order, string name, Func<bool> isSelected, Action toggle)
         {
-            TextColor = new Color(255, 220, 135)
-        });
-        header.Append(new UIText(subtitle, .68f)
-        {
-            Top = { Pixels = 28f },
-            TextColor = new Color(174, 216, 226)
-        });
-        return header;
-    }
-
-    private static ArenaGameCommandButton CommandButton(Func<string> label, Func<string> tooltip,
-        Func<bool> enabled, Func<bool> danger, Action action, float leftPercent, float top, float widthPercent,
-        Func<AdminUIIcon> icon = null) => new(label, tooltip, enabled, danger, action, icon)
-        {
-            Left = { Percent = leftPercent },
-            Top = { Pixels = top },
-            Width = { Pixels = -5f, Percent = widthPercent },
-            Height = { Pixels = 42f }
-        };
-}
-
-internal sealed class WorldGenSummary : UIPanel
-{
-    internal WorldGenSummary()
-    {
-        SetPadding(0f);
-        BackgroundColor = new Color(20, 27, 62) * .95f;
-        BorderColor = new Color(78, 104, 190) * .8f;
-    }
-
-    protected override void DrawSelf(SpriteBatch spriteBatch)
-    {
-        base.DrawSelf(spriteBatch);
-        Rectangle box = GetDimensions().ToRectangle();
-        WorldGenPassRunner runner = ModContent.GetInstance<WorldGenPassRunner>();
-        Draw(spriteBatch, runner.Status, box.X + 14, box.Y + 10, Color.White, .88f, box.Width - 28);
-        Draw(spriteBatch, $"Job: {(string.IsNullOrWhiteSpace(runner.ActivePass) ? "None" : runner.ActivePass)}   |   Seed: {(runner.Seed == 0 ? "—" : runner.Seed)}",
-            box.X + 14, box.Y + 40, Color.LightGray, .70f, box.Width - 28);
-        Draw(spriteBatch, $"Progress: {runner.Progress:P0}   |   Elapsed: {runner.Elapsed.TotalSeconds:F1}s   |   Mode: {(Main.netMode == NetmodeID.MultiplayerClient ? "Server-authoritative multiplayer" : Main.netMode == NetmodeID.Server ? "Dedicated server" : "Singleplayer")}",
-            box.X + 14, box.Y + 65, Color.LightBlue, .68f, box.Width - 28);
-        string backup = runner.BackupAvailable ? "Backup ready for this job" : "A full world backup is created before every generation or cleanup job";
-        Draw(spriteBatch, backup, box.X + 14, box.Y + 89, new Color(174, 216, 226), .60f, box.Width - 28);
-    }
-
-    private static void Draw(SpriteBatch batch, string text, float x, float y, Color color, float scale, float maxWidth)
-    {
-        float width = FontAssets.MouseText.Value.MeasureString(text).X * scale;
-        if (width > maxWidth)
-            scale *= maxWidth / width;
-        Utils.DrawBorderString(batch, text, new Vector2(x, y), color, scale);
-    }
-}
-
-internal sealed class WorldGenTabButton : UIPanel
-{
-    private readonly string label;
-    private readonly string tooltip;
-    private readonly AdminUIIcon icon;
-    private readonly Func<bool> selected;
-    private readonly Action action;
-
-    internal WorldGenTabButton(string label, string tooltip, AdminUIIcon icon, Func<bool> selected, Action action)
-    {
-        this.label = label;
-        this.tooltip = tooltip;
-        this.icon = icon;
-        this.selected = selected;
-        this.action = action;
-        SetPadding(0f);
-    }
-
-    public override void LeftClick(UIMouseEvent evt)
-    {
-        base.LeftClick(evt);
-        SoundEngine.PlaySound(SoundID.MenuTick);
-        action();
-    }
-
-    public override void Update(GameTime gameTime)
-    {
-        base.Update(gameTime);
-        if (!IsMouseHovering)
-            return;
-        Main.LocalPlayer.mouseInterface = true;
-        Main.instance.MouseText(tooltip);
-    }
-
-    protected override void DrawSelf(SpriteBatch spriteBatch)
-    {
-        bool active = selected();
-        BackgroundColor = active ? new Color(74, 98, 180) : IsMouseHovering ? new Color(52, 69, 128) : new Color(32, 43, 83);
-        BorderColor = IsMouseHovering ? Color.Yellow : active ? new Color(130, 164, 255) : Color.Black;
-        base.DrawSelf(spriteBatch);
-        Rectangle box = GetDimensions().ToRectangle();
-        Color color = active ? Color.White : new Color(190, 205, 235);
-        const float iconSize = 24f;
-        const float gap = 6f;
-        float scale = .72f;
-        Vector2 textSize = FontAssets.MouseText.Value.MeasureString(label) * scale;
-        float maxTextWidth = Math.Max(1f, box.Width - iconSize - gap - 16f);
-        if (textSize.X > maxTextWidth)
-        {
-            scale *= maxTextWidth / textSize.X;
-            textSize = FontAssets.MouseText.Value.MeasureString(label) * scale;
-        }
-        float left = box.Center.X - (iconSize + gap + textSize.X) * .5f;
-        VanillaAdminIcons.DrawFitted(spriteBatch, icon,
-            new Rectangle((int)left, box.Center.Y - (int)(iconSize * .5f), (int)iconSize, (int)iconSize),
-            color, allowUpscale: true);
-        Utils.DrawBorderString(spriteBatch, label,
-            new Vector2(left + iconSize + gap, box.Center.Y - textSize.Y * .5f + 2f), color, scale);
-    }
-
-    internal static void DrawCentered(SpriteBatch spriteBatch, string text, Rectangle box, Color color, float scale)
-    {
-        Vector2 size = FontAssets.MouseText.Value.MeasureString(text) * scale;
-        if (size.X > box.Width - 12f)
-        {
-            scale *= (box.Width - 12f) / size.X;
-            size = FontAssets.MouseText.Value.MeasureString(text) * scale;
-        }
-        Utils.DrawBorderString(spriteBatch, text, new Vector2(box.Center.X, box.Center.Y - size.Y * .5f + 2f), color, scale, .5f);
-    }
-}
-
-internal sealed class WorldGenPassRow : UIElement
-{
-    private readonly int order;
-    private readonly string name;
-    private readonly Func<bool> selected;
-    private readonly Func<int> runIndex;
-    private readonly Action action;
-
-    internal WorldGenPassRow(int order, string name, Func<bool> selected, Func<int> runIndex, Action action)
-    {
-        this.order = order;
-        this.name = name;
-        this.selected = selected;
-        this.runIndex = runIndex;
-        this.action = action;
-        Width.Set(0f, 1f);
-        Height.Set(28f, 0f);
-    }
-
-    public override void LeftClick(UIMouseEvent evt)
-    {
-        base.LeftClick(evt);
-        SoundEngine.PlaySound(SoundID.MenuTick);
-        action();
-    }
-
-    public override void Update(GameTime gameTime)
-    {
-        base.Update(gameTime);
-        if (!IsMouseHovering)
-            return;
-        Main.LocalPlayer.mouseInterface = true;
-        string safety = WorldGenPassRunner.IsDangerous(name)
-            ? "Risky: this vanilla pass is untested live or can rewrite a large part of the world."
-            : "Tested for live-world use.";
-        string extra = name == "Floating Island Houses" ? " Floating Islands is automatically added first when needed." : "";
-        Main.instance.MouseText($"Vanilla order #{order:00}. Selected passes execute in this top-to-bottom order. {safety}{extra}");
-    }
-
-    protected override void DrawSelf(SpriteBatch spriteBatch)
-    {
-        Rectangle box = GetDimensions().ToRectangle();
-        bool active = selected();
-        bool danger = WorldGenPassRunner.IsDangerous(name);
-        Color fill = danger
-            ? active ? new Color(135, 46, 58) : IsMouseHovering ? new Color(103, 39, 50) : new Color(76, 31, 42)
-            : active ? new Color(65, 91, 169) : IsMouseHovering ? new Color(48, 65, 120) : new Color(34, 45, 86);
-        spriteBatch.Draw(TextureAssets.MagicPixel.Value, box, fill);
-
-        Rectangle check = new(box.X + 6, box.Y + 6, 16, 16);
-        DrawOutline(spriteBatch, check, active ? new Color(145, 190, 255) : new Color(112, 132, 175));
-        if (active)
-        {
-            Rectangle mark = new(check.X + 4, check.Y + 4, check.Width - 8, check.Height - 8);
-            spriteBatch.Draw(TextureAssets.MagicPixel.Value, mark, Color.White);
+            this.order = order;
+            this.name = name;
+            this.isSelected = isSelected;
+            this.toggle = toggle;
+            Width.Set(0f, 1f);
+            Height.Set(29f, 0f);
         }
 
-        Utils.DrawBorderString(spriteBatch, $"{order:00}", new Vector2(box.X + 29, box.Y + 7), new Color(174, 216, 226), .53f);
-        Color iconTint = danger
-            ? active ? new Color(255, 205, 175) : new Color(220, 155, 140)
-            : active ? Color.White : new Color(170, 205, 220);
-        VanillaAdminIcons.DrawFitted(spriteBatch, VanillaAdminIcons.ForPass(name),
-            new Rectangle(box.X + 52, box.Y + 4, 20, 20), iconTint);
-        DrawFit(spriteBatch, name, new Vector2(box.X + 80, box.Y + 5), Color.White, .62f, Math.Max(50f, box.Width - 260f));
+        public override void LeftClick(UIMouseEvent evt)
+        {
+            base.LeftClick(evt);
+            if (!CanEdit)
+                return;
+            SoundEngine.PlaySound(SoundID.MenuTick);
+            toggle();
+        }
 
-        string badge = danger ? "RISK" : "TESTED";
-        Color badgeColor = danger ? new Color(255, 165, 120) : new Color(145, 230, 175);
-        DrawFit(spriteBatch, badge, new Vector2(box.Right - 154, box.Y + 7), badgeColor, .48f, 62f);
-        int execution = runIndex();
-        if (execution > 0)
-            DrawFit(spriteBatch, $"RUN {execution}", new Vector2(box.Right - 78, box.Y + 7), Color.LightBlue, .50f, 66f);
+        protected override void DrawSelf(SpriteBatch spriteBatch)
+        {
+            Rectangle box = GetDimensions().ToRectangle();
+            bool active = isSelected();
+            bool hover = CanEdit && IsMouseHovering;
+            Color fill = active ? new Color(53, 76, 130) : hover ? new Color(36, 49, 86) : new Color(25, 34, 62);
+            spriteBatch.Draw(TextureAssets.MagicPixel.Value, box, fill);
+            Rectangle check = new(box.X + 8, box.Y + 7, 15, 15);
+            spriteBatch.Draw(TextureAssets.MagicPixel.Value, check, active ? new Color(147, 196, 255) : new Color(85, 104, 148));
+            check.Inflate(-2, -2);
+            spriteBatch.Draw(TextureAssets.MagicPixel.Value, check, fill);
+            if (active)
+            {
+                check.Inflate(-2, -2);
+                spriteBatch.Draw(TextureAssets.MagicPixel.Value, check, new Color(194, 221, 255));
+            }
+            Color text = CanEdit ? Color.White : new Color(145, 156, 178);
+            Utils.DrawBorderString(spriteBatch, order.ToString("00"), new Vector2(box.X + 31, box.Y + 8), new Color(137, 157, 195), .55f);
+            DrawText(spriteBatch, name, new Vector2(box.X + 58, box.Y + 6), text, .70f, box.Width - 66f);
+            if (IsMouseHovering)
+                Main.instance.MouseText(name);
+        }
     }
 
-    internal static void DrawOutline(SpriteBatch batch, Rectangle rect, Color color)
+    private sealed class StatusLine(Func<string> status) : UIElement
     {
-        Texture2D pixel = TextureAssets.MagicPixel.Value;
-        batch.Draw(pixel, new Rectangle(rect.X, rect.Y, rect.Width, 2), color);
-        batch.Draw(pixel, new Rectangle(rect.X, rect.Bottom - 2, rect.Width, 2), color);
-        batch.Draw(pixel, new Rectangle(rect.X, rect.Y, 2, rect.Height), color);
-        batch.Draw(pixel, new Rectangle(rect.Right - 2, rect.Y, 2, rect.Height), color);
+        protected override void DrawSelf(SpriteBatch spriteBatch)
+        {
+            Rectangle box = GetDimensions().ToRectangle();
+            string text = status() ?? "";
+            string percentage = Runner.Busy ? Runner.Progress.ToString("P0") : "";
+            float reserved = percentage.Length == 0 ? 0f : 44f;
+            DrawText(spriteBatch, text, new Vector2(box.X + 2, box.Y + 3), new Color(177, 194, 222), .64f, box.Width - reserved - 6f);
+            if (percentage.Length > 0)
+                Utils.DrawBorderString(spriteBatch, percentage, new Vector2(box.Right - 3, box.Y + 3), Color.LightBlue, .64f, 1f);
+            if (Runner.Busy)
+            {
+                Rectangle bar = new(box.X + 2, box.Bottom - 3, box.Width - 4, 2);
+                spriteBatch.Draw(TextureAssets.MagicPixel.Value, bar, new Color(41, 56, 89));
+                bar.Width = (int)(bar.Width * Math.Clamp(Runner.Progress, 0d, 1d));
+                if (bar.Width > 0)
+                    spriteBatch.Draw(TextureAssets.MagicPixel.Value, bar, new Color(126, 186, 244));
+            }
+            if (IsMouseHovering && text.Length > 0)
+            {
+                string[] lines = Utils.WordwrapString(text, FontAssets.MouseText.Value, 440, 20, out _);
+                Main.instance.MouseText(string.Join("\n", lines.Where(line => !string.IsNullOrEmpty(line))));
+            }
+        }
     }
 
-    private static void DrawFit(SpriteBatch batch, string text, Vector2 position, Color color, float scale, float maxWidth)
+    private static void DrawText(SpriteBatch batch, string text, Vector2 position, Color color, float scale, float width)
     {
-        float width = FontAssets.MouseText.Value.MeasureString(text).X * scale;
-        if (width > maxWidth)
-            scale *= maxWidth / width;
-        Utils.DrawBorderString(batch, text, position, color, scale);
-    }
-}
-
-internal sealed class WorldCleanupCard : UIPanel
-{
-    private readonly WorldClearAction action;
-    private readonly Func<bool> armed;
-    private readonly Func<bool> enabled;
-    private readonly Action clicked;
-
-    internal WorldCleanupCard(WorldClearAction action, Func<bool> armed, Func<bool> enabled, Action clicked)
-    {
-        this.action = action;
-        this.armed = armed;
-        this.enabled = enabled;
-        this.clicked = clicked;
-        SetPadding(0f);
-    }
-
-    public override void LeftClick(UIMouseEvent evt)
-    {
-        base.LeftClick(evt);
-        if (!enabled())
-            return;
-        SoundEngine.PlaySound(SoundID.MenuTick);
-        clicked();
-    }
-
-    public override void Update(GameTime gameTime)
-    {
-        base.Update(gameTime);
-        if (!IsMouseHovering)
-            return;
-        Main.LocalPlayer.mouseInterface = true;
-        Main.instance.MouseText(Description(action, true));
-    }
-
-    protected override void DrawSelf(SpriteBatch spriteBatch)
-    {
-        bool available = enabled();
-        bool confirm = armed();
-        BackgroundColor = !available ? new Color(45, 45, 55) * .72f
-            : confirm ? new Color(165, 42, 56)
-            : IsMouseHovering ? new Color(110, 42, 54) : new Color(76, 31, 42);
-        BorderColor = IsMouseHovering && available ? Color.Yellow : confirm ? Color.OrangeRed : Color.Black;
-        base.DrawSelf(spriteBatch);
-
-        Rectangle box = GetDimensions().ToRectangle();
-        string title = confirm ? $"CONFIRM: {WorldGenPassRunner.ClearActionName(action)}" : WorldGenPassRunner.ClearActionName(action);
-        Color contentColor = available ? Color.White : Color.Gray;
-        VanillaAdminIcons.DrawFitted(spriteBatch, VanillaAdminIcons.ForCleanup(action),
-            new Rectangle(box.X + 14, box.Y + 9, 30, 30), contentColor, allowUpscale: true);
-        DrawFit(spriteBatch, title, new Vector2(box.X + 52, box.Y + 12), contentColor, .82f, box.Width - 66f);
-        DrawFit(spriteBatch, Description(action, false), new Vector2(box.X + 14, box.Y + 47), new Color(224, 190, 194), .63f, box.Width - 28f);
-        DrawFit(spriteBatch, "BACKUP + TWO-CLICK CONFIRM", new Vector2(box.X + 14, box.Bottom - 25), new Color(255, 174, 118), .53f, box.Width - 28f);
-    }
-
-    private static string Description(WorldClearAction action, bool detailed) => action switch
-    {
-        WorldClearAction.Tiles => detailed ? "Removes every block and placed object. Walls, liquids, and wiring remain; chest, sign, and tile-entity registrations are cleaned up." : "Blocks + placed objects; keeps walls/liquid/wires",
-        WorldClearAction.Walls => detailed ? "Removes every background wall while leaving blocks, liquids, and wiring unchanged." : "Background walls only",
-        WorldClearAction.Liquids => detailed ? "Drains water, lava, honey, and shimmer everywhere and resets Terraria's liquid queues." : "Water, lava, honey + shimmer",
-        WorldClearAction.Wiring => detailed ? "Removes all four wire colors, actuators, and actuated states without changing terrain." : "All wire colors + actuators",
-        WorldClearAction.PaintAndCoatings => detailed ? "Removes tile and wall paint, echo coating, and illuminant coating across the world." : "Tile/wall paint + coatings",
-        WorldClearAction.Everything => detailed ? "Resets all tilemap data: blocks, walls, liquids, wiring, slopes, paint, and coatings, then removes tile-bound entities." : "Complete tilemap reset",
-        _ => "World cleanup"
-    };
-
-    private static void DrawFit(SpriteBatch batch, string text, Vector2 position, Color color, float scale, float maxWidth)
-    {
-        float width = FontAssets.MouseText.Value.MeasureString(text).X * scale;
-        if (width > maxWidth)
-            scale *= maxWidth / width;
-        Utils.DrawBorderString(batch, text, position, color, scale);
-    }
-}
-
-internal sealed class WorldVisualToggle : UIPanel
-{
-    private readonly WorldVisualLayer layer;
-    private readonly string label;
-    private readonly string description;
-
-    internal WorldVisualToggle(WorldVisualLayer layer, string label, string description)
-    {
-        this.layer = layer;
-        this.label = label;
-        this.description = description;
-        SetPadding(0f);
-    }
-
-    public override void LeftClick(UIMouseEvent evt)
-    {
-        base.LeftClick(evt);
-        WorldGenVisualSystem.SetShown(layer, !WorldGenVisualSystem.IsShown(layer));
-        SoundEngine.PlaySound(SoundID.MenuTick);
-    }
-
-    public override void Update(GameTime gameTime)
-    {
-        base.Update(gameTime);
-        if (!IsMouseHovering)
-            return;
-        Main.LocalPlayer.mouseInterface = true;
-        Main.instance.MouseText($"{description}. Local visual setting; no world data is changed.");
-    }
-
-    protected override void DrawSelf(SpriteBatch spriteBatch)
-    {
-        bool shown = WorldGenVisualSystem.IsShown(layer);
-        BackgroundColor = IsMouseHovering ? new Color(50, 68, 127) : new Color(30, 41, 79);
-        BorderColor = IsMouseHovering ? Color.Yellow : new Color(78, 104, 190) * .8f;
-        base.DrawSelf(spriteBatch);
-        Rectangle box = GetDimensions().ToRectangle();
-        Rectangle toggle = new(box.X + 14, box.Y + 18, 40, 40);
-        spriteBatch.Draw(TextureAssets.MagicPixel.Value, toggle, shown ? new Color(66, 145, 102) : new Color(125, 48, 58));
-        WorldGenPassRow.DrawOutline(spriteBatch, toggle, shown ? new Color(160, 245, 190) : new Color(255, 150, 150));
-        WorldGenTabButton.DrawCentered(spriteBatch, shown ? "✓" : "×", toggle, Color.White, .85f);
-        VanillaAdminIcons.DrawFitted(spriteBatch, VanillaAdminIcons.ForVisual(layer),
-            new Rectangle(box.X + 66, box.Y + 10, 26, 26), shown ? Color.White : new Color(210, 170, 175),
-            allowUpscale: true);
-        Utils.DrawBorderString(spriteBatch, label, new Vector2(box.X + 100, box.Y + 11), Color.White, .82f);
-        Utils.DrawBorderString(spriteBatch, shown ? "VISIBLE" : "HIDDEN", new Vector2(box.X + 100, box.Y + 39),
-            shown ? new Color(145, 230, 175) : new Color(255, 155, 155), .60f);
+        text = text.Replace('\r', ' ').Replace('\n', ' ');
+        string visible = text;
+        if (FontAssets.MouseText.Value.MeasureString(text).X * scale > width)
+        {
+            while (visible.Length > 0 && FontAssets.MouseText.Value.MeasureString(visible + "…").X * scale > width)
+                visible = visible[..^1];
+            visible += "…";
+        }
+        Utils.DrawBorderString(batch, visible, position, color, scale);
     }
 }

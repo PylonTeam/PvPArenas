@@ -30,9 +30,13 @@ internal static class ArenaVotingTests
 
     public static void Run(Assembly arenas)
     {
-        Main.netMode = NetmodeID.SinglePlayer;
+        Main.netMode = NetmodeID.Server;
         Main.dedServ = true;
         Main.myPlayer = 0;
+        for (int i = 0; i < NetMessage.buffer.Length; i++)
+            NetMessage.buffer[i] = new MessageBuffer { whoAmI = i };
+        for (int i = 0; i < Netplay.Clients.Length; i++)
+            Netplay.Clients[i] = new RemoteClient { Id = i };
         Main.rand = new UnifiedRandom(42);
         CreativePowerManager.Initialize();
         Type configType = arenas.GetType("PvPArenas.Core.Configs.ServerConfig", true)!;
@@ -61,6 +65,17 @@ internal static class ArenaVotingTests
         Check("config serializes named fights without editable boss IDs or list", saved["FightPresets"] == null
             && saved["KingSlime"] is JObject && saved["KingSlime"]!["Boss"] == null
             && saved["KingSlime"]!["ArenaKind"] == null);
+        Check("arena dimensions are absent from all four config sections",
+            new[] { "KingSlime", "EyeOfCthulhu", "Plantera", "Golem" }.All(name =>
+                saved[name]!["ArenaWidthTiles"] == null && saved[name]!["ArenaHeightTiles"] == null));
+        JObject oldDimensions = Write(Read(new JObject { ["KingSlime"] = new JObject
+        {
+            ["ArenaWidthTiles"] = 700, ["ArenaHeightTiles"] = 900, ["MaxHealth"] = 250
+        } }));
+        Check("obsolete named dimensions are ignored while health is preserved",
+            oldDimensions["KingSlime"]!["ArenaWidthTiles"] == null
+            && oldDimensions["KingSlime"]!["ArenaHeightTiles"] == null
+            && (int)oldDimensions["KingSlime"]!["MaxHealth"]! == 250);
         Check("the obsolete early-finish setting is ignored when loading old configs",
             configType.GetField("EndVotingWhenEveryoneVoted", All) == null
             && Write(Read(new JObject { ["EndVotingWhenEveryoneVoted"] = true }))
@@ -87,7 +102,7 @@ internal static class ArenaVotingTests
             new JObject { ["Boss"] = Npc(NPCID.None) }) };
         object migrated = Read(legacy);
         Check("legacy entries map by boss identity and preserve fight settings",
-            Boss(migrated, 2) == NPCID.Plantera && (int)Get(Preset(migrated, 2), "ArenaWidthTiles") == 321
+            Boss(migrated, 2) == NPCID.Plantera && Write(migrated)["Plantera"]!["ArenaWidthTiles"] == null
             && (int)Get(Preset(migrated, 2), "GracePeriodSeconds") == 9 && Health(migrated, 2) == 320 && Mana(migrated, 2) == 140);
         Check("legacy custom loadouts survive migration", (string)Get(((IList)Get(Preset(migrated, 2), "Loadouts"))[0]!, "Name") == "Custom");
         Check("unsupported and sandbox entries cannot replace fixed choices", Boss(migrated, 0) == NPCID.KingSlime
@@ -124,6 +139,12 @@ internal static class ArenaVotingTests
         Register(config);
         object round = Activator.CreateInstance(roundType, true)!;
         Register(round);
+        object framework = Activator.CreateInstance(Type.GetType("PvPFramework.PvPFramework, PvPFramework", true)!, true)!;
+        typeof(Mod).GetField("netID", All)!.SetValue(framework, (short)0);
+        typeof(ModNet).GetField("netMods", All)!.SetValue(null, new Mod[] { (Mod)framework });
+        Register(framework);
+        Register(Activator.CreateInstance(arenas.GetType("PvPArenas.Common.Generation.ArenaPreparation", true)!, true)!);
+        Register(Activator.CreateInstance(Type.GetType("ErkySSC.Common.RegionProtection.RegionSystem, ErkySSC", true)!, true)!);
         object integration = Activator.CreateInstance(arenas.GetType(
             "PvPArenas.Common.Game.ArenaSpawnBoxIntegration", true)!, true)!;
         Set(integration, "registered", true);
@@ -136,8 +157,8 @@ internal static class ArenaVotingTests
         Main.player[1] = new Player { whoAmI = 1, active = true, team = 3 };
         Call(vote, "Start", 1800);
         uint id = (uint)Get(vote, "BallotId");
-        Call(vote, "CastVote", 0, id, 2);
-        Call(vote, "CastVote", 1, id, 2);
+        Call(vote, "CastVote", 0, id, 1);
+        Call(vote, "CastVote", 1, id, 1);
         Set(round, "remainingTicks", 1800);
         ((ModSystem)round).PostUpdateEverything();
         Check("all players voting cannot complete early", (bool)Get(vote, "Active")
@@ -147,17 +168,24 @@ internal static class ArenaVotingTests
         Check("all players voting still waits for the full timer",
             (bool)Get(vote, "Active") && (int)Get(vote, "Winner") == -1
             && (int)Get(round, "RemainingTicks") == 1 && (uint)Get(vote, "BallotId") == id);
-        Check("active players can vote for a fixed boss", (int)Call(vote, "VoteCount", 2) == 2);
+        Check("active players can vote for a ready arena", (int)Call(vote, "VoteCount", 1) == 2);
         Call(vote, "CastVote", 0, id, 0);
-        Check("changing a choice moves one vote", (int)Call(vote, "VoteCount", 2) == 1
+        Check("changing a choice moves one vote", (int)Call(vote, "VoteCount", 1) == 1
             && (int)Call(vote, "VoteCount", 0) == 1 && (int)Get(vote, "TotalVotes") == 2);
+        Call(vote, "CastVote", 0, id, 2);
+        Call(vote, "CastVote", 0, id, 3);
+        Check("generated Jungle accepts votes while the missing Temple does not",
+            (int)Call(vote, "VoteCount", 2) == 1 && (int)Call(vote, "VoteCount", 3) == 0
+            && (int)Call(vote, "VoteCount", 0) == 0);
+        Call(vote, "CastVote", 0, id, 0);
         Call(vote, "CastVote", 0, id, 4);
         Call(vote, "CastVote", 0, id - 1, 3);
         Check("invalid options and stale ballots are rejected", (int)Call(vote, "VoteCount", 3) == 0
             && (int)Get(vote, "TotalVotes") == 2);
         Set(round, "showingResults", true);
         Call(vote, "CastVote", 0, id, 1);
-        Check("end-screen stage cannot accept votes", (int)Call(vote, "VoteCount", 1) == 0);
+        Check("end-screen stage cannot accept votes", (int)Call(vote, "VoteCount", 1) == 1
+            && (int)Call(vote, "VoteCount", 0) == 1);
         Set(round, "showingResults", false);
         Main.player[1].active = false;
         vote.PostUpdatePlayers();
@@ -185,22 +213,28 @@ internal static class ArenaVotingTests
             && (int)Get(client, "DurationTicks") == 1800 && (int)Get(client, "LocalVote") == 0);
 
         // Reproduce the server log: a surface exists at the center, but neither team has grounded spawns.
-        Main.maxTilesX = 400;
-        Main.maxTilesY = 300;
+        Main.maxTilesX = 850;
+        Main.maxTilesY = 600;
         Main.tile = (Tilemap)Activator.CreateInstance(typeof(Tilemap), All, null,
-            [(ushort)400, (ushort)300], null)!;
+            [(ushort)850, (ushort)600], null)!;
         Main.tileSolid[TileID.Dirt] = true;
-        Tile ground = Main.tile[200, 100];
+        Tile ground = Main.tile[425, 100];
         ground.HasTile = true;
         ground.TileType = TileID.Dirt;
+        for (int x = 424; x <= 426; x++)
+        {
+            Tile support = Main.tile[x, 100];
+            support.HasTile = true;
+            support.TileType = TileID.Dirt;
+        }
         for (int tick = 0; tick < 113; tick++)
             ((ModSystem)round).PostUpdateEverything();
         Check("the winner remains visible for the whole result duration",
             (int)Get(round, "RemainingTicks") == 1 && (uint)Get(vote, "BallotId") == id);
         ((ModSystem)round).PostUpdateEverything();
         string failure = (string)Get(round, "PreparationFailure");
-        Check("missing team spawns hold the voted boss with a concrete failure",
-            failure.Contains("Grounded Red and Blue spawn positions")
+        Check("missing lobby spawn holds the voted boss with a concrete failure",
+            failure.Contains("lobby needs a dry, grounded spawn")
             && (bool)Get(round, "IsIdleHeld") && Get(round, "CurrentPhase").ToString() == "WaitingForPlayers"
             && (int)Get(round, "SelectedPresetIndex") == winner);
         for (int tick = 0; tick < 1800; tick++)
@@ -234,7 +268,7 @@ internal static class ArenaVotingTests
         Call(vote, "Start", 300);
         Check("new ballot clears the previous result and votes",
             (uint)Get(vote, "BallotId") != id && (int)Get(vote, "Winner") == -1 && (int)Get(vote, "TotalVotes") == 0);
-        Check("empty ballot picks one of the fixed bosses", (int)Call(vote, "Complete") is >= 0 and < 4);
+        Check("empty ballot picks an available authored or generated arena", (int)Call(vote, "Complete") is 0 or 1 or 2);
 
         phase.SetValue(round, Enum.Parse(phase.FieldType, "Playing"));
         Set(round, "selectedPresetIndex", 2);

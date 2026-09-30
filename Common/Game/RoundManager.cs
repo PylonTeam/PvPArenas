@@ -3,6 +3,7 @@ using PvPArenas.Common.Game.LoadoutSelector;
 using PvPArenas.Common.Game.Score;
 using PvPArenas.Common.Game.TeamBalancing;
 using PvPArenas.Common.Generation;
+using PvPArenas.Common.AdminTools.WorldGenManager;
 using PvPArenas.Core.Configs;
 using PvPFramework.Common.EndScreen;
 using System;
@@ -60,6 +61,7 @@ internal sealed class RoundManager : ModSystem
     private string preparationFailure = "";
     private int selectedPresetIndex = -1;
     private ArenaLayout currentLayout;
+    private Point stagingSpawn;
 
     /// <summary>UTC time the current fight (Playing phase) began; used for match reporting.</summary>
     internal System.DateTime RoundStartUtc { get; private set; } = System.DateTime.UtcNow;
@@ -76,6 +78,7 @@ internal sealed class RoundManager : ModSystem
         && ModContent.GetInstance<BossVoteSystem>().Active;
     internal int SelectedPresetIndex => selectedPresetIndex;
     internal ArenaLayout CurrentLayout => currentLayout;
+    internal Point StagingSpawn => stagingSpawn;
 
     internal int SelectedBossType => TryGetSelectedPreset(out BossFightPreset preset)
         ? preset.Boss.Type
@@ -83,11 +86,16 @@ internal sealed class RoundManager : ModSystem
 
     public override void PostUpdateEverything()
     {
+        if (ModContent.GetInstance<WorldGenPassRunner>()?.Busy == true)
+            return;
+
         if (Main.netMode == NetmodeID.MultiplayerClient)
         {
             TickClientTimer();
             return;
         }
+        if (Main.netMode != NetmodeID.Server)
+            return;
 
         if (!Main.player.Any(player => player?.active == true))
         {
@@ -97,6 +105,12 @@ internal sealed class RoundManager : ModSystem
         }
 
         TeamBalancer.AssignUnassignedPlayers();
+
+        if (currentPhase == RoundPhase.Generating)
+        {
+            AdvancePreparation();
+            return;
+        }
 
         if (currentPhase == RoundPhase.WaitingForPlayers)
         {
@@ -206,7 +220,8 @@ internal sealed class RoundManager : ModSystem
 
     internal void ExecuteAdminAction(AdminAction action, int playerId)
     {
-        if (Main.netMode == NetmodeID.MultiplayerClient)
+        if (Main.netMode == NetmodeID.MultiplayerClient
+            || ModContent.GetInstance<WorldGenPassRunner>()?.Busy == true)
             return;
 
         Log.Info($"[M2-Admin] player={playerId}, action={action}, phase={currentPhase}.");
@@ -309,6 +324,8 @@ internal sealed class RoundManager : ModSystem
 
     private void PrepareRound()
     {
+        if (Main.netMode != NetmodeID.Server)
+            return;
         EndScreenService.Hide();
 
         preparationFailure = "";
@@ -323,26 +340,58 @@ internal sealed class RoundManager : ModSystem
             return;
         }
 
-        Player[] participants = Main.player
-            .Where(player => player?.active == true && (Team)player.team is Team.Red or Team.Blue)
-            .ToArray();
-        if (participants.Length == 0)
+        if (!Main.player.Any(player => player?.active == true && (Team)player.team is Team.Red or Team.Blue))
         {
             HoldPreparationFailure("No active Red or Blue players were available after automatic assignment.");
             return;
         }
 
+        currentLayout = null;
+        // Registration is needed before calculating the protected staging rectangle.
         SetPhase(RoundPhase.Generating, 0);
-        if (!ArenaGeneration.TryResolve(preset, out ArenaLayout layout, out string failure))
+        try
+        {
+            ArenaPreparation preparation = ModContent.GetInstance<ArenaPreparation>();
+            if (!preparation.TryBegin(preset, out string failure))
+            {
+                HoldPreparationFailure(failure);
+                return;
+            }
+            ModContent.GetInstance<BossManager>().Cleanup();
+            ArenaPlayer.ReleaseAll();
+            stagingSpawn = preparation.StagingSpawn;
+            SyncState();
+            foreach (Player player in Main.player)
+                if (player?.active == true)
+                    ArenaPlayer.Stage(player, stagingSpawn);
+        }
+        catch (Exception exception)
+        {
+            Log.Error(exception);
+            HoldPreparationFailure(exception.Message);
+        }
+    }
+
+    private void AdvancePreparation()
+    {
+        if (!ModContent.GetInstance<ArenaPreparation>().Advance(out string failure))
+            return;
+        if (failure.Length > 0)
         {
             HoldPreparationFailure(failure);
             return;
         }
+        if (!TryGetSelectedPreset(out BossFightPreset preset)
+            || !ArenaGeneration.TryResolve(preset, out ArenaLayout layout, out failure))
+        {
+            HoldPreparationFailure(failure.Length > 0 ? failure : "The selected boss is unavailable.");
+            return;
+        }
 
         currentLayout = layout;
-        ArenaBorder.ClearSpawnBoxes(currentLayout);
-        foreach (Player player in participants)
-            ArenaPlayer.Prepare(player, preset, currentLayout);
+        foreach (Player player in Main.player)
+            if (player?.active == true && (Team)player.team is Team.Red or Team.Blue)
+                ArenaPlayer.Prepare(player, preset, currentLayout);
 
         int countdownSeconds = Math.Max(0, ModContent.GetInstance<ServerConfig>().FreezeCountdownSeconds);
         if (countdownSeconds == 0)
@@ -356,6 +405,7 @@ internal sealed class RoundManager : ModSystem
 
     private void HoldPreparationFailure(string failure)
     {
+        ModContent.GetInstance<ArenaPreparation>()?.Cancel();
         // Keep the completed ballot so Start Round retries its winner instead of rolling another boss.
         preparationFailure = failure;
         currentLayout = null;
@@ -369,29 +419,6 @@ internal sealed class RoundManager : ModSystem
             ChatHelper.BroadcastChatMessage(NetworkText.FromKey(key, failure), Color.OrangeRed);
         else if (!Main.dedServ)
             Main.NewText(Language.GetTextValue(key, failure), Color.OrangeRed);
-    }
-
-    internal static void SendArenaSections(Player player, ArenaLayout layout)
-    {
-        if (Main.netMode != NetmodeID.Server || player?.active != true || layout == null
-            || player.whoAmI < 0 || player.whoAmI >= Main.maxPlayers)
-            return;
-
-        Rectangle bounds = layout.ArenaBounds;
-        int minSectionX = Math.Max(0, bounds.Left / ArenaMapSystem.SectionWidth);
-        int maxSectionX = Math.Min((Main.maxTilesX - 1) / ArenaMapSystem.SectionWidth,
-            Math.Max(bounds.Left, bounds.Right - 1) / ArenaMapSystem.SectionWidth);
-        int minSectionY = Math.Max(0, bounds.Top / ArenaMapSystem.SectionHeight);
-        int maxSectionY = Math.Min((Main.maxTilesY - 1) / ArenaMapSystem.SectionHeight,
-            Math.Max(bounds.Top, bounds.Bottom - 1) / ArenaMapSystem.SectionHeight);
-        int sectionsPerPlayer = (maxSectionX - minSectionX + 1)
-            * (maxSectionY - minSectionY + 1);
-
-        for (int sectionY = minSectionY; sectionY <= maxSectionY; sectionY++)
-            for (int sectionX = minSectionX; sectionX <= maxSectionX; sectionX++)
-                NetMessage.SendSection(player.whoAmI, sectionX, sectionY);
-
-        Log.Chat($"Sent {sectionsPerPlayer} arena map sections to {player.name} ({player.whoAmI}); bounds={bounds}.");
     }
 
     private void StartPlaying()
@@ -420,6 +447,7 @@ internal sealed class RoundManager : ModSystem
         if (Main.netMode == NetmodeID.MultiplayerClient)
             return;
 
+        ModContent.GetInstance<ArenaPreparation>()?.Cancel();
         ModContent.GetInstance<BossManager>().Cleanup();
         ArenaPlayer.ReleaseAll();
         pendingWinningTeam = Team.None;
@@ -590,6 +618,7 @@ internal sealed class RoundManager : ModSystem
 
     public override void ClearWorld()
     {
+        ModContent.GetInstance<ArenaPreparation>()?.Cancel();
         ModContent.GetInstance<BossManager>().Cleanup();
         currentPhase = RoundPhase.WaitingForPlayers;
         remainingTicks = 0;
@@ -610,6 +639,8 @@ internal sealed class RoundManager : ModSystem
         writer.Write(showingResults);
         writer.Write(preparationFailure);
         writer.Write(selectedPresetIndex);
+        writer.Write(stagingSpawn.X);
+        writer.Write(stagingSpawn.Y);
         writer.Write(currentLayout != null);
         currentLayout?.Write(writer);
     }
@@ -625,6 +656,7 @@ internal sealed class RoundManager : ModSystem
         showingResults = reader.ReadBoolean();
         preparationFailure = reader.ReadString();
         selectedPresetIndex = reader.ReadInt32();
+        stagingSpawn = new Point(reader.ReadInt32(), reader.ReadInt32());
         currentLayout = reader.ReadBoolean() ? ArenaLayout.Read(reader) : null;
         AnnouncePhaseChange(oldPhase, currentPhase, wasIdleHeld, idleHeld, SelectedBossType);
     }

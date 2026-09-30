@@ -122,6 +122,9 @@ internal static class BossVoteDrawer
     private static void DrawChoice(BossVoteSystem vote, Rectangle box, int index, Point mouse,
         bool interactive, float hover, bool resultChoice)
     {
+        bool available = FightPresets.IsAvailable(index);
+        interactive &= available;
+        if (!available) hover = 0f;
         bool selected = resultChoice || vote.LocalVote == index;
         Color fill = Color.Lerp(new Color(33, 44, 78), new Color(52, 67, 108), hover);
         if (selected) fill = Color.Lerp(fill, Accent, .14f);
@@ -129,10 +132,12 @@ internal static class BossVoteDrawer
         if (selected)
             Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value,
                 new Rectangle(box.X + 10, box.Y + 28, box.Width - 20, 2), Accent * opacity);
-        DrawBossHead(FightPresets.BossType(index), new Rectangle(box.X + 7, box.Y + 2, 28, 28), opacity);
+        DrawBossHead(FightPresets.BossType(index), new Rectangle(box.X + 7, box.Y + 2, 28, 28), opacity * (available ? 1f : .4f));
         Text(Lang.GetNPCNameValue(FightPresets.BossType(index)), new Vector2(box.X + 38, box.Y + 8),
-            selected ? Accent : Color.White, .82f, box.Width - 82, 0f);
-        Text(vote.VoteCount(index).ToString(), new Vector2(box.Right - 11, box.Y + 8), Accent, .82f, 35f, 1f);
+            !available ? Color.Gray : selected ? Accent : Color.White, .82f, box.Width - 82, 0f);
+        Text(available ? vote.VoteCount(index).ToString() : "—", new Vector2(box.Right - 11, box.Y + 8), Accent, .82f, 35f, 1f);
+        if (!available)
+            Text(Label("MapUnavailable"), new Vector2(box.X + 12, box.Y + 42), Color.Gray, .64f, box.Width - 24, 0f);
         if (!interactive || !box.Contains(mouse) || !Main.mouseLeft || !Main.mouseLeftRelease) return;
         Main.mouseLeftRelease = false;
         SoundEngine.PlaySound(SoundID.MenuTick);

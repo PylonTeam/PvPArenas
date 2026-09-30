@@ -138,7 +138,8 @@ internal sealed class ScorelineUISystem : ModSystem
             RoundManager.RoundPhase.VotingOrEndScreen when manager.IsShowingResults => $"Results {FormatTime(manager.RemainingTicks)}",
             RoundManager.RoundPhase.VotingOrEndScreen when manager.IsVoting => $"Boss vote {FormatTime(manager.RemainingTicks)}",
             RoundManager.RoundPhase.VotingOrEndScreen => $"Next round {FormatTime(manager.RemainingTicks)}",
-            RoundManager.RoundPhase.Generating => "Preparing",
+            RoundManager.RoundPhase.Generating => manager.SelectedBossType == Terraria.ID.NPCID.Plantera
+                ? "Generating jungle" : "Preparing arena",
             RoundManager.RoundPhase.FreezeCountdown => $"Starting {Math.Max(1,
                 (int)Math.Ceiling(manager.RemainingTicks / 60f))}",
             RoundManager.RoundPhase.Playing => FormatTime(manager.RemainingTicks),

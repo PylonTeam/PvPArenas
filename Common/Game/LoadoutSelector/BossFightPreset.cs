@@ -20,13 +20,7 @@ internal sealed class BossFightPreset
     public List<ArenaLoadoutOption> Loadouts = [];
 
     [JsonIgnore]
-    public ArenaKind ArenaKind = ArenaKind.WorldCenterSurface;
-
-    [DefaultValue(500), Range(100, 4000)]
-    public int ArenaWidthTiles = 500;
-
-    [DefaultValue(500), Range(100, 4000)]
-    public int ArenaHeightTiles = 500;
+    public ArenaKind ArenaKind = ArenaKind.ArenasV10;
 
     [DefaultValue(5), Range(0, 300)]
     public int GracePeriodSeconds = 5;

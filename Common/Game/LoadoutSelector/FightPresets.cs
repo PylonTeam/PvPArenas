@@ -8,6 +8,9 @@ internal static class FightPresets
 {
     internal const int Count = 4;
 
+    // Plantera generates its jungle; Golem still needs its authored temple.
+    internal static bool IsAvailable(int index) => index is 0 or 1 or 2;
+
     internal static int BossType(int index) => index switch
     {
         0 => NPCID.KingSlime,
@@ -24,10 +27,8 @@ internal static class FightPresets
         {
             2 => ArenaKind.UndergroundJungle,
             3 => ArenaKind.JungleTemple,
-            _ => ArenaKind.WorldCenterSurface
+            _ => ArenaKind.ArenasV10
         },
-        ArenaWidthTiles = 200,
-        ArenaHeightTiles = 100,
         MaxHealth = index < 2 ? 200 : index == 2 ? 400 : 500,
         MaxMana = index < 2 ? 100 : index == 2 ? 180 : 200,
         Loadouts = index switch

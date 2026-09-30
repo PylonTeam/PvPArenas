@@ -3,6 +3,6 @@ author = Erky
 version = 0.2
 side = both
 modReferences = ErkySSC, PvPFramework, Pylon
-buildIgnore = *.csproj, *.user, *.md, obj\*, bin\*, .vs\*, Tests\*, Assets\Old\*, Assets\Workshop\*, Assets\Custom\Old\*, *.psd
+buildIgnore = *.csproj, *.user, *.md, obj\*, bin\*, .vs\*, Tests\*, Docs\*, Assets\Old\*, Assets\Workshop\*, Assets\Custom\Old\*, *.psd
 sortAfter = Pylon, PvPFramework
 loadAfter = Pylon, PvPFramework

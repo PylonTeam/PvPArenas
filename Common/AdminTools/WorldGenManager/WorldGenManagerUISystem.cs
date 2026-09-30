@@ -8,26 +8,51 @@ internal sealed class WorldGenManagerUISystem : ModSystem
 {
     private UserInterface ui;
     private UIState state;
+    private WorldGenManagerPanel panel;
 
-    internal bool IsActive => ui?.CurrentState == state;
+    internal bool IsActive => state != null && ui?.CurrentState == state;
+
     internal void Toggle()
     {
-        bool opening = !IsActive;
-        ui?.SetState(opening ? state : null);
-        if (opening)
-            WorldGenManagerNetHandler.RequestStatus();
+        if (IsActive)
+        {
+            Close();
+            return;
+        }
+        ui?.SetState(state);
+        WorldGenManagerNetHandler.RequestStatus();
     }
-    internal void Close() => ui?.SetState(null);
+
+    internal void Close()
+    {
+        panel?.ReleaseInput();
+        ui?.SetState(null);
+    }
 
     public override void OnWorldLoad()
     {
+        Close();
         ui = new UserInterface();
         state = new UIState();
-        state.Append(new WorldGenManagerPanel());
-        ui.SetState(null);
+        panel = new WorldGenManagerPanel();
+        state.Append(panel);
     }
 
-    public override void UpdateUI(GameTime gameTime) => ui?.Update(gameTime);
+    public override void OnWorldUnload()
+    {
+        Close();
+        ui = null;
+        state = null;
+        panel = null;
+    }
+
+    public override void Unload() => OnWorldUnload();
+
+    public override void UpdateUI(GameTime gameTime)
+    {
+        if (IsActive)
+            ui.Update(gameTime);
+    }
 
     public override void ModifyInterfaceLayers(List<GameInterfaceLayer> layers)
     {

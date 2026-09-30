@@ -14,7 +14,7 @@ internal sealed record ArenaLayout(Rectangle ArenaBounds, Point BlueSpawn, Point
         ArenaBounds.Width / 2,
         ArenaBounds.Height);
 
-    internal Point BossSpawn => BossBounds.Center;
+    internal Point BossSpawn { get; init; } = ArenaBounds.Center;
 
     internal Rectangle RedSpawnBox => new(
         ArenaBounds.Left,
@@ -40,10 +40,11 @@ internal sealed record ArenaLayout(Rectangle ArenaBounds, Point BlueSpawn, Point
         Write(writer, ArenaBounds);
         Write(writer, BlueSpawn);
         Write(writer, RedSpawn);
+        Write(writer, BossSpawn);
     }
 
     internal static ArenaLayout Read(BinaryReader reader) => new(
-        ReadRectangle(reader), ReadPoint(reader), ReadPoint(reader));
+        ReadRectangle(reader), ReadPoint(reader), ReadPoint(reader)) { BossSpawn = ReadPoint(reader) };
 
     private static void Write(BinaryWriter writer, Rectangle value)
     {

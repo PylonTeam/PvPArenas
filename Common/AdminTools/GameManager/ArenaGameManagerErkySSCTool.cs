@@ -35,7 +35,7 @@ internal sealed class ArenaGameManagerErkySSCTool : ModSystem
             () => ModContent.GetInstance<ArenaGameManagerUISystem>().IsActive);
 
         Add(mod, WorldGenOwner, "world_gen_manager", "Arenas: World Gen Manager",
-            "Generate, clean, inspect, and control the loaded world's visuals", VanillaAdminIcons.MixedSeed.Asset, 32,
+            "Select world generation passes and run them", VanillaAdminIcons.MixedSeed.Asset, 32,
             () => ModContent.GetInstance<WorldGenManager.WorldGenManagerUISystem>().Toggle(),
             () => ModContent.GetInstance<WorldGenManager.WorldGenManagerUISystem>().IsActive);
     }

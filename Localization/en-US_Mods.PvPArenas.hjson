@@ -4,6 +4,7 @@ Voting: {
 	ChooseBoss: Choose the next boss fight
 	VoteCount: "{0} votes cast · Most votes wins"
 	Selected: Selected
+	MapUnavailable: Map not ready
 }
 
 Round: {
@@ -83,16 +84,6 @@ Configs: {
 
 		ArenaKind: {
 			Label: Arena Kind
-			Tooltip: ""
-		}
-
-		ArenaWidthTiles: {
-			Label: Arena Width Tiles
-			Tooltip: ""
-		}
-
-		ArenaHeightTiles: {
-			Label: Arena Height Tiles
 			Tooltip: ""
 		}
 
@@ -239,8 +230,8 @@ Configs: {
 	ArenaKind: {
 		Tooltip: ""
 
-		WorldCenterSurface: {
-			Label: World Center Surface
+		ArenasV10: {
+			Label: Arenas v10
 			Tooltip: ""
 		}
 

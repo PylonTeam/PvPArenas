@@ -3,12 +3,25 @@ using Terraria.ID;
 
 namespace PvPArenas.Common.Game;
 
-/// <summary>ErkySSC owns the lobby protection; Arenas hides it while the team spawn boxes are active.</summary>
+/// <summary>ErkySSC protects the staging lobby; Arenas hides it during the countdown and fight.</summary>
 internal sealed class ArenaSpawnBoxIntegration : ModSystem
 {
     internal const string RegionKey = "PvPArenas.Spawnbox";
     private bool registered;
     private Point? lastWorldSpawn;
+
+    internal static Rectangle LobbyBounds
+    {
+        get
+        {
+            Rectangle area = RegionSystem.Instance.FindManaged(RegionKey)?.Settings.TileArea
+                ?? RegionSystem.Defaults().TileArea;
+            // Always preserve the actual world spawn, even if an admin moved the region away from it.
+            area = Rectangle.Union(area, new Rectangle(Main.spawnTileX - 5, Main.spawnTileY - 6, 11, 13));
+            area.Inflate(2, 2);
+            return Rectangle.Intersect(area, new Rectangle(1, 4, Main.maxTilesX - 2, Main.maxTilesY - 5));
+        }
+    }
 
     public override void PostSetupContent() => RegisterLobby();
 

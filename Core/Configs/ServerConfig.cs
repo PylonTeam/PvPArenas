@@ -129,8 +129,6 @@ internal sealed class ServerConfig : ModConfig
             preset.ArenaKind = defaults.ArenaKind;
             preset.MaxHealth = Math.Clamp(preset.MaxHealth, 1, 500);
             preset.MaxMana = Math.Clamp(preset.MaxMana, 0, 200);
-            preset.ArenaWidthTiles = Math.Clamp(preset.ArenaWidthTiles, 100, 4000);
-            preset.ArenaHeightTiles = Math.Clamp(preset.ArenaHeightTiles, 100, 4000);
             preset.GracePeriodSeconds = Math.Clamp(preset.GracePeriodSeconds, 0, 300);
             preset.Loadouts ??= defaults.Loadouts;
             switch (index)

@@ -2,7 +2,7 @@
 
 internal enum ArenaKind : byte
 {
-    WorldCenterSurface,
+    ArenasV10,
     UndergroundJungle,
     JungleTemple
 }

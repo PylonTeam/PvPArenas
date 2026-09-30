@@ -1,679 +1,341 @@
+using PvPArenas.Common.Game;
+using PvPArenas.Common.Generation;
+using ErkySSC.Common.RegionProtection;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using Terraria.DataStructures;
-using Terraria.GameContent.Generation;
-using Terraria.Graphics.Light;
 using Terraria.ID;
-using Terraria.IO;
-using Terraria.Utilities;
-using Terraria.WorldBuilding;
 
 namespace PvPArenas.Common.AdminTools.WorldGenManager;
 
+/// <summary>One server-owned native job, generated off-world and committed on the main thread.</summary>
 internal sealed class WorldGenPassRunner : ModSystem
 {
-    private const string ConfigurationPath = "Terraria.GameContent.WorldBuilding.Configuration.json";
-    private const int MapUpdatesPerTick = 25_000;
-    private static readonly HashSet<string> TestedPasses = new(StringComparer.OrdinalIgnoreCase)
+    private string[] passNames = [];
+    private bool busy, available;
+    private string status = "Ready";
+    private double progress;
+    private int seed, revision, epoch;
+    private NativeWorldGenSession session;
+    private Task worker;
+    private long nextStatusTick;
+
+    internal IReadOnlyList<string> PassNames => passNames;
+    internal bool Busy => busy;
+    internal bool Available => available;
+    internal string Status => status;
+    internal double Progress => Volatile.Read(ref progress);
+    internal int Seed => seed;
+
+    public override void Load() => On_Main.ShouldUpdateEntities += ShouldUpdateEntities;
+    public override void Unload()
     {
-        "Life Crystals", "Gems", "Floating Islands", "Floating Island Houses"
-    };
-
-    private readonly object stateLock = new();
-    private GenerationProgress progress;
-    private Stopwatch timer;
-    private string status = "Idle";
-    private string activePass = "";
-    private string backupPath = "";
-    private int seed;
-    private int mapRefreshIndex = -1;
-    private int lastLoggedPercent = -10;
-    private double operationProgress;
-    private double networkProgress;
-    private double networkElapsedSeconds;
-    private bool networkBackupAvailable;
-    private bool busy;
-
-    internal bool Busy { get { lock (stateLock) return busy; } }
-    internal string Status { get { lock (stateLock) return status; } }
-    internal string ActivePass { get { lock (stateLock) return activePass; } }
-    internal string BackupPath { get { lock (stateLock) return backupPath; } }
-    internal int Seed { get { lock (stateLock) return seed; } }
-    internal double Progress => Main.netMode == NetmodeID.MultiplayerClient
-        ? networkProgress
-        : progress?.TotalProgress ?? operationProgress;
-    internal TimeSpan Elapsed => Main.netMode == NetmodeID.MultiplayerClient
-        ? TimeSpan.FromSeconds(networkElapsedSeconds)
-        : timer?.Elapsed ?? TimeSpan.Zero;
-    internal bool BackupAvailable => Main.netMode == NetmodeID.MultiplayerClient
-        ? networkBackupAvailable
-        : !string.IsNullOrWhiteSpace(BackupPath);
-    internal IReadOnlyList<string> PassNames => WorldGen.VanillaGenPasses.Keys.ToArray();
-
-    internal static bool IsDangerous(string name) => !string.IsNullOrWhiteSpace(name) && !TestedPasses.Contains(name);
-    internal static bool IsTested(string name) => !string.IsNullOrWhiteSpace(name) && TestedPasses.Contains(name);
-
-    internal bool TryResolvePass(string input, out string name)
-    {
-        name = WorldGen.VanillaGenPasses.Keys.FirstOrDefault(candidate =>
-            candidate.Equals(input?.Trim(), StringComparison.OrdinalIgnoreCase));
-        return name != null;
+        Shutdown();
+        On_Main.ShouldUpdateEntities -= ShouldUpdateEntities;
     }
+    private bool ShouldUpdateEntities(On_Main.orig_ShouldUpdateEntities orig, Main self) =>
+        !busy && orig(self);
 
-    internal bool TryRun(string requestedPass, out string error)
-        => TryRun([requestedPass], out error);
-
-    internal bool TryRun(IReadOnlyList<string> requestedPasses, out string error)
+    public override void OnWorldLoad()
     {
-        error = "";
-        if (Main.netMode == NetmodeID.MultiplayerClient)
-        {
-            error = "World-generation passes must be requested from the server.";
-            return false;
-        }
-        if (requestedPasses == null || requestedPasses.Count == 0)
-        {
-            error = "Select at least one world-generation pass.";
-            return false;
-        }
-
-        List<string> passNames = new(requestedPasses.Count);
-        foreach (string requestedPass in requestedPasses)
-        {
-            if (!TryResolvePass(requestedPass, out string passName))
-            {
-                error = $"Unknown vanilla world generation pass: {requestedPass}";
-                return false;
-            }
-            if (!passNames.Contains(passName, StringComparer.OrdinalIgnoreCase))
-                passNames.Add(passName);
-        }
-
-        string jobName = passNames.Count == 1 ? passNames[0] : $"{passNames.Count} selected passes";
-        lock (stateLock)
-        {
-            if (busy)
-            {
-                error = $"'{activePass}' is already running.";
-                return false;
-            }
-            busy = true;
-            activePass = jobName;
-            seed = Random.Shared.Next(1, int.MaxValue);
-            status = "Saving and backing up the world";
-            backupPath = "";
-            progress = new GenerationProgress();
-            operationProgress = 0d;
-            timer = Stopwatch.StartNew();
-            lastLoggedPercent = -10;
-        }
-
-        bool gameplayUpdates = Main.CanUpdateGameplay;
-        try
-        {
-            WorldFile.SaveWorld();
-            lock (stateLock)
-                backupPath = CreateBackup();
-            WorldGenConfiguration configuration = WorldGenConfiguration.FromEmbeddedPath(ConfigurationPath);
-            WorldGen.Hooks.ProcessWorldGenConfig(ref configuration);
-            LiveGenerationState previous = LiveGenerationState.Capture();
-            Main.ToggleGameplayUpdates(false);
-            SetStatus(passNames.Count == 1 ? $"Running {passNames[0]}" : $"Running {passNames.Count} passes in listed order");
-            Log.Info($"[WorldGenManager] START passes='{string.Join(" -> ", passNames)}' seed={seed} backup='{backupPath}'");
-            if (Main.netMode == NetmodeID.SinglePlayer)
-                Main.NewText($"World Gen Manager: running {jobName} with seed {seed}.", Color.Orange);
-            ThreadPool.QueueUserWorkItem(_ => RunPassWorker(passNames, seed, configuration, previous));
-            return true;
-        }
-        catch (Exception exception)
-        {
-            timer?.Stop();
-            Main.ToggleGameplayUpdates(gameplayUpdates);
-            SetFailed(exception);
-            error = exception.Message;
-            return false;
-        }
-    }
-
-    internal bool TryClear(WorldClearAction action, out string error)
-    {
-        error = "";
-        if (Main.netMode == NetmodeID.MultiplayerClient)
-        {
-            error = "World cleanup must be requested from the server.";
-            return false;
-        }
-        if (!Enum.IsDefined(action))
-        {
-            error = "Unknown world cleanup action.";
-            return false;
-        }
-
-        string jobName = ClearActionName(action);
-        lock (stateLock)
-        {
-            if (busy)
-            {
-                error = $"'{activePass}' is already running.";
-                return false;
-            }
-            busy = true;
-            activePass = jobName;
-            seed = 0;
-            status = "Saving and backing up the world";
-            backupPath = "";
-            progress = null;
-            operationProgress = 0d;
-            timer = Stopwatch.StartNew();
-            lastLoggedPercent = -10;
-        }
-
-        bool gameplayUpdates = Main.CanUpdateGameplay;
-        try
-        {
-            WorldFile.SaveWorld();
-            lock (stateLock)
-                backupPath = CreateBackup();
-            LiveGenerationState previous = LiveGenerationState.Capture();
-            Main.ToggleGameplayUpdates(false);
-            SetStatus(jobName);
-            Log.Info($"[WorldGenManager] START action='{action}' backup='{backupPath}'");
-            if (Main.netMode == NetmodeID.SinglePlayer)
-                Main.NewText($"World Gen Manager: {jobName.ToLowerInvariant()}.", Color.Orange);
-            ThreadPool.QueueUserWorkItem(_ => RunClearWorker(action, previous));
-            return true;
-        }
-        catch (Exception exception)
-        {
-            timer?.Stop();
-            Main.ToggleGameplayUpdates(gameplayUpdates);
-            SetFailed(exception);
-            error = exception.Message;
-            return false;
-        }
-    }
-
-    public override void PostUpdateEverything()
-    {
-        if (Busy && Main.GameUpdateCount % 60 == 0)
-        {
-            int percent = Math.Clamp((int)(Progress * 100d), 0, 100);
-            if (percent >= lastLoggedPercent + 10)
-            {
-                lastLoggedPercent = percent;
-                Log.Info($"[WorldGenManager] {ActivePass}: {percent}% {progress?.Message}");
-            }
-        }
-        if (Busy && Main.netMode == NetmodeID.Server && Main.GameUpdateCount % 30 == 0)
-            WorldGenManagerNetHandler.SendStatus(this);
-
-        if (mapRefreshIndex < 0 || Main.Map == null)
+        passNames = [];
+        busy = available = false;
+        progress = 0;
+        seed = revision = 0;
+        status = Main.netMode == NetmodeID.MultiplayerClient ? "Connecting…"
+            : Main.netMode == NetmodeID.Server ? "Ready" : "Generation must run on the server.";
+        if (Main.netMode != NetmodeID.Server)
             return;
-
-        int total = Main.maxTilesX * Main.maxTilesY;
-        int stop = Math.Min(total, mapRefreshIndex + MapUpdatesPerTick);
-        for (; mapRefreshIndex < stop; mapRefreshIndex++)
+        try
         {
-            int x = mapRefreshIndex % Main.maxTilesX;
-            int y = mapRefreshIndex / Main.maxTilesX;
-            if (Main.Map.IsRevealed(x, y))
-                Main.Map.UpdateType(x, y);
+            if (!NativeLibraryLoader.TryLoad(Mod, out string error))
+                throw new InvalidOperationException(error);
+            using NativeWorldGenSession catalog = CreateSession(0);
+            passNames = catalog.PassNames.ToArray();
+            available = passNames.Length > 0;
+            if (!available)
+                status = "The native library has no generation passes.";
         }
-        if (mapRefreshIndex >= total)
-            mapRefreshIndex = -1;
+        catch (Exception exception)
+        {
+            status = exception.Message;
+            Log.Warn(status);
+        }
     }
 
-    public override void OnWorldUnload()
+    internal static string[] OrderPasses(IReadOnlyList<string> catalog, IReadOnlyList<string> selected)
     {
-        mapRefreshIndex = -1;
-        progress = null;
-        operationProgress = 0d;
-        networkProgress = 0d;
-        networkElapsedSeconds = 0d;
-        networkBackupAvailable = false;
+        if (selected == null || selected.Count == 0)
+            throw new ArgumentException("Select at least one pass.");
+        HashSet<string> requested = new(selected, StringComparer.OrdinalIgnoreCase);
+        if (requested.Any(name => !catalog.Contains(name, StringComparer.OrdinalIgnoreCase)))
+            throw new ArgumentException("The selection contains an unknown native pass.");
+        return catalog.Where(requested.Contains).ToArray();
     }
 
-    private void RunPassWorker(IReadOnlyList<string> passNames, int runSeed, WorldGenConfiguration configuration, LiveGenerationState previous)
+    internal bool TryRun(IReadOnlyList<string> selected, out string error)
+    {
+        error = "";
+        bool preparingArena = ModContent.GetInstance<RoundManager>()?.CurrentPhase == RoundManager.RoundPhase.Generating;
+        if (Main.netMode != NetmodeID.Server || busy || preparingArena || !available)
+        {
+            error = Main.netMode != NetmodeID.Server ? "Generation must run on the server."
+                : busy || preparingArena ? "Generation is already running." : status;
+            return false;
+        }
+        string[] ordered;
+        try { ordered = OrderPasses(passNames, selected); }
+        catch (ArgumentException exception) { error = exception.Message; return false; }
+        try
+        {
+            bool resetWorld = ordered.Contains("Reset", StringComparer.OrdinalIgnoreCase);
+            bool initialize = session == null || resetWorld;
+            if (initialize)
+            {
+                session?.Dispose();
+                session = null;
+                seed = Random.Shared.Next(1, int.MaxValue);
+                session = CreateSession(seed, ReportProgress);
+            }
+            session.BindTileArrays();
+            // Leave the match idle until the operator starts it on the new terrain.
+            ModContent.GetInstance<RoundManager>().ExecuteAdminAction(RoundManager.AdminAction.SetIdle, -1);
+            busy = true;
+            status = "Preparing…";
+            progress = 0;
+            int jobEpoch = ++epoch;
+            nextStatusTick = 0;
+            WorldGenManagerNetHandler.SendStatus(this, includePasses: true);
+            worker = Task.Run(() => Generate(ordered, jobEpoch, initialize, resetWorld));
+            return true;
+        }
+        catch (Exception exception)
+        {
+            session?.Dispose();
+            session = null;
+            busy = false;
+            status = error = exception.Message;
+            Log.Error(exception);
+            return false;
+        }
+    }
+
+    private static NativeWorldGenSession CreateSession(int runSeed, WgProgressCallback callback = null) =>
+        new(runSeed, Main.maxTilesX switch { 4200 => 0, 6400 => 1, 8400 => 2, _ => 3 },
+            Main.maxTilesX, Main.maxTilesY, WorldGen.crimson ? 2 : 1, Main.GameMode, callback);
+
+    private void Generate(string[] ordered, int jobEpoch, bool initialize, bool resetWorld)
     {
         Exception failure = null;
+        Stopwatch timer = Stopwatch.StartNew();
         try
         {
-            PrepareLiveGeneration(configuration);
-            WorldGenerator generator = new(runSeed, configuration);
-            if (passNames.Contains("Floating Island Houses", StringComparer.OrdinalIgnoreCase)
-                && !passNames.Contains("Floating Islands", StringComparer.OrdinalIgnoreCase))
-                generator.Append(WorldGen.VanillaGenPasses["Floating Islands"]);
-            foreach (string passName in passNames)
-                generator.Append(WorldGen.VanillaGenPasses[passName]);
-            generator.GenerateWorld(progress);
+            if (initialize)
+            {
+                session.Initialize();
+                // Bootstrap a loaded world once; later jobs retain native prerequisite state.
+                if (!resetWorld)
+                    Check(session.RunPass("Reset"));
+            }
+            session.SyncFromTml();
+            session.CopyWorldFieldsToNative();
+            Check(session.RunPasses(ordered));
+            session.SyncToTml(); // Writes staging arrays; Terraria is updated only in Finish.
+        }
+        catch (Exception exception) { failure = exception; }
+        Main.QueueMainThreadAction(() =>
+        {
+            if (jobEpoch == epoch)
+                Finish(failure, resetWorld, timer.Elapsed);
+        });
+    }
 
-            SetStatus("Framing tiles and walls");
+    private void ReportProgress(IntPtr userData, int taskId, float value, int pass, IntPtr message)
+    {
+        status = message == IntPtr.Zero ? "Generating…" : Marshal.PtrToStringUTF8(message) ?? "Generating…";
+        Volatile.Write(ref progress, Math.Clamp((double)value, 0, 1));
+        long now = Environment.TickCount64;
+        if (now < nextStatusTick)
+            return;
+        nextStatusTick = now + 250;
+        int jobEpoch = epoch;
+        // World/entity hooks are paused, so dispatch progress through the main-thread queue.
+        Main.QueueMainThreadAction(() =>
+        {
+            if (jobEpoch == epoch && busy)
+                WorldGenManagerNetHandler.SendStatus(this);
+        });
+    }
+
+    private void Finish(Exception failure, bool resetWorld, TimeSpan elapsed)
+    {
+        bool committed = false;
+        try
+        {
+            if (failure != null)
+                throw failure;
+            session.CommitTiles();
+            committed = true;
+            session.ApplyWorldFields();
+            if (resetWorld)
+            {
+                Array.Clear(Main.sign);
+                TileEntity.ByID.Clear();
+                TileEntity.ByPosition.Clear();
+            }
+            session.ImportChests(resetWorld);
             WorldGen.RangeFrame(1, 1, Main.maxTilesX - 2, Main.maxTilesY - 2);
+            Liquid.ReInit();
         }
-        catch (Exception exception)
+        catch (Exception exception) { failure = exception; }
+        // Even a failed metadata/framing step can follow a successful tile commit.
+        // Invalidate clients in that case too; this disposable world has no rollback.
+        if (committed)
         {
-            failure = exception;
-        }
-        finally
-        {
-            previous.Restore();
-        }
-
-        string jobName = passNames.Count == 1 ? passNames[0] : $"{passNames.Count} selected passes";
-        Main.QueueMainThreadAction(() => FinishOnMainThread(jobName, runSeed, failure, previous.GameplayUpdates));
-    }
-
-    private void RunClearWorker(WorldClearAction action, LiveGenerationState previous)
-    {
-        Exception failure = null;
-        try
-        {
-            WorldGen.generatingWorld = true;
-            WorldGen.gen = true;
-            WorldGen.noTileActions = true;
-            WorldGen.noMapUpdate = true;
-
-            int width = Main.maxTilesX;
-            int height = Main.maxTilesY;
-            long total = (long)width * height;
-            long processed = 0;
-
-            for (int y = 0; y < height; y++)
+            ModContent.GetInstance<ArenaPreparation>()?.MarkWorldChanged();
+            revision++;
+            try
             {
-                for (int x = 0; x < width; x++)
+                if (Main.netMode == NetmodeID.Server)
                 {
-                    Tile tile = Main.tile[x, y];
-                    ApplyClearAction(tile, action);
-                    processed++;
+                    Netplay.ResetSections();
+                    NetMessage.SendData(MessageID.WorldData);
+                    ArenaTileSync.Send(new Rectangle(0, 0, Main.maxTilesX, Main.maxTilesY));
                 }
-                operationProgress = processed / (double)total;
+                RefreshRendering();
+                RelocatePlayers();
             }
-
-            if (action is WorldClearAction.Tiles or WorldClearAction.Everything)
-                ClearTileBoundEntities();
-            if (action is WorldClearAction.Liquids or WorldClearAction.Everything)
-                Liquid.ReInit();
-            if (action is WorldClearAction.Tiles or WorldClearAction.Walls or WorldClearAction.Everything)
-            {
-                SetStatus("Framing tiles and walls");
-                WorldGen.RangeFrame(1, 1, Main.maxTilesX - 2, Main.maxTilesY - 2);
-            }
+            catch (Exception exception) { failure ??= exception; }
         }
-        catch (Exception exception)
+        try
         {
-            failure = exception;
+            if (failure != null)
+            {
+                status = "Generation failed: " + failure.Message;
+                Log.Error(failure);
+                session?.Dispose();
+                session = null;
+            }
+            else
+            {
+                status = $"Done · {elapsed.TotalSeconds:0.0}s · Seed {seed}";
+                progress = 1;
+            }
         }
         finally
         {
-            previous.Restore();
+            worker = null;
+            busy = false;
+            WorldGenManagerNetHandler.SendStatus(this, includePasses: true);
         }
-
-        string jobName = ClearActionName(action);
-        Main.QueueMainThreadAction(() => FinishOnMainThread(jobName, 0, failure, previous.GameplayUpdates));
     }
 
-    private void FinishOnMainThread(string jobName, int runSeed, Exception failure, bool gameplayUpdates)
+    private static void RelocatePlayers()
     {
-        Main.ToggleGameplayUpdates(gameplayUpdates);
-        timer?.Stop();
-
-        if (failure != null)
+        // Find open ground near world spawn without deleting its floor or carving spawn boxes.
+        int preferredX = Math.Clamp(Main.spawnTileX, 20, Main.maxTilesX - 21);
+        Point? spawn = null;
+        for (int distance = 0; distance < Main.maxTilesX * 2 && spawn == null; distance++)
         {
-            SetFailed(failure);
-            if (Main.netMode == NetmodeID.SinglePlayer)
-                Main.NewText($"World Gen Manager failed in '{jobName}'. Exit without saving and restore the backup.", Color.Red);
-            WorldGenManagerNetHandler.SendStatus(this);
-            return;
+            int x = preferredX + (distance % 2 == 0 ? distance / 2 : -(distance + 1) / 2);
+            if (x < 20 || x >= Main.maxTilesX - 20)
+                continue;
+            for (int y = 20; y < Main.maxTilesY - 20; y++)
+            {
+                if (ArenaGeneration.IsSafeSpawn(x, y)) { spawn = new Point(x, y); break; }
+            }
         }
-
-        try
+        if (spawn is not { } tile)
+            return; // Reset alone can intentionally leave an empty world.
+        Main.spawnTileX = tile.X;
+        Main.spawnTileY = tile.Y;
+        if (Main.netMode == NetmodeID.Server)
+            NetMessage.SendData(MessageID.WorldData);
+        foreach (Player player in Main.player)
         {
-            SetStatus("Saving generated world");
-            RefreshLocalRendering();
-            WorldFile.SaveWorld();
+            if (player?.active != true)
+                continue;
+            Vector2 destination = new(tile.X * 16f + 8f - player.width / 2f, tile.Y * 16f - player.height);
             if (Main.netMode == NetmodeID.Server)
-            {
-                NetMessage.SendData(MessageID.WorldData);
-                Netplay.ResetSections();
-            }
-            mapRefreshIndex = 0;
-            ModContent.GetInstance<WorldGenDebugStats>().RestartScan();
-            lock (stateLock)
-            {
-                busy = false;
-                operationProgress = 1d;
-                status = $"Completed {jobName} in {timer.Elapsed.TotalSeconds:F1}s";
-            }
-            Log.Info($"[WorldGenManager] END job='{jobName}' seed={runSeed} elapsed={timer.Elapsed.TotalSeconds:F1}s backup='{backupPath}'");
-            if (Main.netMode == NetmodeID.SinglePlayer)
-                Main.NewText($"World Gen Manager: '{jobName}' completed in {timer.Elapsed.TotalSeconds:F1}s.", Color.LightGreen);
-            WorldGenManagerNetHandler.SendStatus(this);
-        }
-        catch (Exception exception)
-        {
-            SetFailed(exception);
-            if (Main.netMode == NetmodeID.SinglePlayer)
-                Main.NewText("World generation finished, but final refresh/save failed. Restore the backup if needed.", Color.Red);
-            WorldGenManagerNetHandler.SendStatus(this);
+                RemoteClient.CheckSection(player.whoAmI, destination, 1);
+            player.Teleport(destination, TeleportationStyleID.RodOfDiscord);
+            player.velocity = Vector2.Zero;
+            if (Main.netMode == NetmodeID.Server)
+                RegionTeleportSystem.Synchronize(player, TeleportationStyleID.RodOfDiscord);
         }
     }
 
-    private static void RefreshLocalRendering()
+    private static void RefreshRendering()
     {
-        // Terraria's server-side Hardmode completion only invalidates network sections.
-        // Lighting._activeEngine is initialized by the graphical client and remains null
-        // on dedicated servers, so Lighting.Clear() must never run there.
         if (Main.dedServ || Main.netMode == NetmodeID.Server)
             return;
-
         Main.instance.ClearCachedTileDraws();
         Lighting.Clear();
+        Main.Map?.Clear();
+        Main.clearMap = true;
         Main.instance.waterfallManager?.FindWaterfalls(true);
     }
 
-    internal void SetAwaitingServer(string message)
+    private static void Check(WgResult result)
     {
-        if (Main.netMode != NetmodeID.MultiplayerClient)
+        if (result != WgResult.Ok)
+            throw new InvalidOperationException(result.ToString());
+    }
+
+    public override void OnWorldUnload() => Shutdown();
+
+    internal void Shutdown()
+    {
+        epoch++; // Queued completion must not touch a subsequently loaded world.
+        if (worker is { IsCompleted: false })
+            session?.RequestCancel();
+        worker?.GetAwaiter().GetResult();
+        session?.Dispose();
+        session = null;
+        worker = null;
+        busy = false;
+    }
+
+    internal void SetAwaitingServer() { busy = true; status = "Starting…"; progress = 0; }
+
+    internal void WriteStatus(BinaryWriter writer, bool includePasses)
+    {
+        writer.Write(busy);
+        writer.Write(available);
+        writer.Write(status);
+        writer.Write(Progress);
+        writer.Write(seed);
+        writer.Write(revision);
+        writer.Write(includePasses);
+        if (!includePasses)
             return;
-        lock (stateLock)
-        {
-            busy = true;
-            status = message;
-            activePass = "Waiting for server";
-            networkProgress = 0d;
-            networkElapsedSeconds = 0d;
-            networkBackupAvailable = false;
-        }
+        writer.Write((ushort)passNames.Length);
+        foreach (string name in passNames)
+            writer.Write(name);
     }
 
-    internal void ApplyNetworkStatus(bool isBusy, string currentStatus, string currentPass,
-        int currentSeed, double currentProgress, double elapsedSeconds, bool hasBackup)
+    internal void ReadStatus(BinaryReader reader)
     {
-        if (Main.netMode != NetmodeID.MultiplayerClient)
-            return;
-        bool completed;
-        lock (stateLock)
+        busy = reader.ReadBoolean();
+        available = reader.ReadBoolean();
+        status = reader.ReadString();
+        progress = Math.Clamp(reader.ReadDouble(), 0, 1);
+        seed = reader.ReadInt32();
+        int incomingRevision = reader.ReadInt32();
+        if (reader.ReadBoolean())
         {
-            completed = busy && !isBusy;
-            busy = isBusy;
-            status = currentStatus;
-            activePass = currentPass;
-            seed = currentSeed;
-            networkProgress = Math.Clamp(currentProgress, 0d, 1d);
-            networkElapsedSeconds = Math.Max(0d, elapsedSeconds);
-            networkBackupAvailable = hasBackup;
+            passNames = new string[reader.ReadUInt16()];
+            for (int i = 0; i < passNames.Length; i++)
+                passNames[i] = reader.ReadString();
         }
-        if (completed)
-        {
-            mapRefreshIndex = 0;
-            ModContent.GetInstance<WorldGenDebugStats>().RestartScan();
-        }
-    }
-
-    internal static string ClearActionName(WorldClearAction action) => action switch
-    {
-        WorldClearAction.Tiles => "Clear all tiles",
-        WorldClearAction.Walls => "Clear all walls",
-        WorldClearAction.Liquids => "Clear all liquids",
-        WorldClearAction.Wiring => "Clear all wiring and actuators",
-        WorldClearAction.PaintAndCoatings => "Clear all paint and coatings",
-        WorldClearAction.Everything => "Clear the entire tilemap",
-        _ => "World cleanup"
-    };
-
-    private static void ApplyClearAction(Tile tile, WorldClearAction action)
-    {
-        switch (action)
-        {
-            case WorldClearAction.Tiles:
-                tile.ClearTile();
-                tile.ClearBlockPaintAndCoating();
-                break;
-
-            case WorldClearAction.Walls:
-                tile.WallType = WallID.None;
-                tile.ClearWallPaintAndCoating();
-                break;
-
-            case WorldClearAction.Liquids:
-                tile.LiquidAmount = 0;
-                tile.LiquidType = LiquidID.Water;
-                break;
-
-            case WorldClearAction.Wiring:
-                tile.RedWire = false;
-                tile.BlueWire = false;
-                tile.GreenWire = false;
-                tile.YellowWire = false;
-                tile.HasActuator = false;
-                tile.IsActuated = false;
-                break;
-
-            case WorldClearAction.PaintAndCoatings:
-                tile.ClearBlockPaintAndCoating();
-                tile.ClearWallPaintAndCoating();
-                break;
-
-            case WorldClearAction.Everything:
-                tile.ClearEverything();
-                break;
-        }
-    }
-
-    private static void ClearTileBoundEntities()
-    {
-        Array.Clear(Main.chest);
-        Array.Clear(Main.sign);
-        TileEntity.ByID.Clear();
-        TileEntity.ByPosition.Clear();
-    }
-
-    private void PrepareLiveGeneration(WorldGenConfiguration configuration)
-    {
-        GenVars.configuration = configuration;
-        GenVars.structures = new StructureMap();
-        GenVars.worldSurface = Main.worldSurface;
-        GenVars.worldSurfaceHigh = Math.Max(201d, Main.worldSurface - 25d);
-        GenVars.worldSurfaceLow = Math.Max(201d, GenVars.worldSurfaceHigh - 75d);
-        GenVars.rockLayer = Main.rockLayer;
-        GenVars.rockLayerLow = Math.Max(Main.worldSurface, Main.rockLayer - 25d);
-        GenVars.rockLayerHigh = Math.Min(Main.maxTilesY - 300d, Main.rockLayer + 25d);
-        GenVars.skyLakes = 1 + (Main.maxTilesX > 6000 ? 1 : 0) + (Main.maxTilesX > 8000 ? 1 : 0);
-        GenVars.UndergroundDesertLocation = Rectangle.Empty;
-
-        // Port of WorldGen.GenerateWorld's GenVars initialization (Terraria/WorldGen.cs
-        // ~7597-7657), minus the surface/rock-layer zeroing (kept live above, since the
-        // vanilla Terrain pass would otherwise fill them) and minus PreWorldGen /
-        // AddGenPassesFromLoadTime (we append only the requested pass). Without this,
-        // isolated passes read stale/zero prerequisites and place features off-screen,
-        // at the world origin, or no-op entirely.
-        GenVars.desertHiveHigh = Main.maxTilesY;
-        GenVars.desertHiveLow = 0;
-        GenVars.desertHiveLeft = Main.maxTilesX;
-        GenVars.desertHiveRight = 0;
-        GenVars.copper = 7;
-        GenVars.iron = 6;
-        GenVars.silver = 9;
-        GenVars.gold = 8;
-        GenVars.dungeonSide = 0;
-        GenVars.dungeonLocation = 0;
-        GenVars.jungleHut = (ushort)Main.rand.Next(5);
-        GenVars.shellStartXLeft = 0;
-        GenVars.shellStartYLeft = 0;
-        GenVars.shellStartXRight = 0;
-        GenVars.shellStartYRight = 0;
-        GenVars.PyrX = null;
-        GenVars.PyrY = null;
-        GenVars.numPyr = 0;
-        GenVars.jungleMinX = -1;
-        GenVars.jungleMaxX = -1;
-        GenVars.jungleOriginX = 0;
-        GenVars.snowMinX = new int[Main.maxTilesY];
-        GenVars.snowMaxX = new int[Main.maxTilesY];
-        GenVars.snowTop = 0;
-        GenVars.snowBottom = 0;
-        GenVars.snowOriginLeft = 0;
-        GenVars.snowOriginRight = 0;
-        GenVars.logX = -1;
-        GenVars.logY = -1;
-        GenVars.beachBordersWidth = 275;
-        GenVars.beachSandRandomCenter = GenVars.beachBordersWidth + 5 + 40;
-        GenVars.beachSandRandomWidthRange = 20;
-        GenVars.beachSandDungeonExtraWidth = 40;
-        GenVars.beachSandJungleExtraWidth = 20;
-        GenVars.oceanWaterStartRandomMin = 220;
-        GenVars.oceanWaterStartRandomMax = GenVars.oceanWaterStartRandomMin + 40;
-        GenVars.oceanWaterForcedJungleLength = 275;
-        GenVars.leftBeachEnd = 0;
-        GenVars.rightBeachStart = 0;
-        GenVars.evilBiomeBeachAvoidance = GenVars.beachSandRandomCenter + 60;
-        GenVars.evilBiomeAvoidanceMidFixer = 50;
-        GenVars.lakesBeachAvoidance = GenVars.beachSandRandomCenter + 20;
-        GenVars.smallHolesBeachAvoidance = GenVars.beachSandRandomCenter + 20;
-        GenVars.surfaceCavesBeachAvoidance = GenVars.beachSandRandomCenter + 20;
-        GenVars.surfaceCavesBeachAvoidance2 = GenVars.beachSandRandomCenter + 20;
-
-        WorldGen.drunkWorldGen = Main.drunkWorld;
-        WorldGen.getGoodWorldGen = Main.getGoodWorld;
-        WorldGen.tenthAnniversaryWorldGen = Main.tenthAnniversaryWorld;
-        WorldGen.dontStarveWorldGen = Main.dontStarveWorld;
-        WorldGen.notTheBees = Main.notTheBeesWorld;
-        WorldGen.remixWorldGen = Main.remixWorld;
-        WorldGen.noTrapsWorldGen = Main.noTrapsWorld;
-        WorldGen.everythingWorldGen = Main.zenithWorld;
-        WorldGen.generatingWorld = true;
-        WorldGen.gen = true;
-        WorldGen.noTileActions = true;
-        WorldGen.noMapUpdate = true;
-    }
-
-    private static string CreateBackup()
-    {
-        WorldFileData world = Main.ActiveWorldFileData ?? throw new InvalidOperationException("No active world file.");
-        string safeName = string.Concat(world.Name.Select(character => Path.GetInvalidFileNameChars().Contains(character) ? '_' : character));
-        string directory = Path.Combine(Main.SavePath, "WorldGenManagerBackups", $"{safeName}-{DateTime.Now:yyyyMMdd-HHmmss}");
-        Directory.CreateDirectory(directory);
-        CopyWorldFile(world.Path, world.IsCloudSave, directory, required: true);
-        CopyWorldFile(Path.ChangeExtension(world.Path, ".twld"), world.IsCloudSave, directory, required: false);
-        return directory;
-    }
-
-    private static void CopyWorldFile(string source, bool cloud, string directory, bool required)
-    {
-        if (!FileUtilities.Exists(source, cloud))
-        {
-            if (required)
-                throw new FileNotFoundException("The active world file could not be backed up.", source);
-            return;
-        }
-
-        string destination = Path.Combine(directory, FileUtilities.GetFileName(source));
-        if (cloud)
-        {
-            if (!FileUtilities.CopyToLocal(source, destination))
-                throw new IOException($"Failed to copy cloud world file '{source}' to '{destination}'.");
-        }
-        else
-        {
-            File.Copy(FileUtilities.GetFullPath(source, false), destination, true);
-        }
-    }
-
-    private void SetStatus(string value)
-    {
-        lock (stateLock)
-            status = value;
-    }
-
-    private void SetFailed(Exception exception)
-    {
-        lock (stateLock)
-        {
-            busy = false;
-            status = $"Failed: {exception.GetType().Name}: {exception.Message}";
-        }
-        Log.Error($"[WorldGenManager] {status}\n{exception}");
-    }
-
-    private sealed class LiveGenerationState
-    {
-        internal bool GameplayUpdates;
-        internal UnifiedRandom GenRandom;
-        internal UnifiedRandom MainRandom;
-        internal WorldGenConfiguration Configuration;
-        internal StructureMap Structures;
-        internal double WorldSurfaceLow, WorldSurface, WorldSurfaceHigh, RockLayerLow, RockLayer, RockLayerHigh;
-        internal int SkyLakes;
-        internal Rectangle UndergroundDesert;
-        internal bool Drunk, Good, Anniversary, Starve, Bees, Remix, NoTraps, Everything;
-        internal bool GeneratingWorld, Gen, NoTileActions, NoMapUpdate;
-        internal bool TileSolid56, TileSolid225, TileSolid484;
-
-        internal static LiveGenerationState Capture() => new()
-        {
-            GameplayUpdates = Main.CanUpdateGameplay,
-            GenRandom = WorldGen._genRand,
-            MainRandom = Main.rand,
-            Configuration = GenVars.configuration,
-            Structures = GenVars.structures,
-            WorldSurfaceLow = GenVars.worldSurfaceLow,
-            WorldSurface = GenVars.worldSurface,
-            WorldSurfaceHigh = GenVars.worldSurfaceHigh,
-            RockLayerLow = GenVars.rockLayerLow,
-            RockLayer = GenVars.rockLayer,
-            RockLayerHigh = GenVars.rockLayerHigh,
-            SkyLakes = GenVars.skyLakes,
-            UndergroundDesert = GenVars.UndergroundDesertLocation,
-            Drunk = WorldGen.drunkWorldGen,
-            Good = WorldGen.getGoodWorldGen,
-            Anniversary = WorldGen.tenthAnniversaryWorldGen,
-            Starve = WorldGen.dontStarveWorldGen,
-            Bees = WorldGen.notTheBees,
-            Remix = WorldGen.remixWorldGen,
-            NoTraps = WorldGen.noTrapsWorldGen,
-            Everything = WorldGen.everythingWorldGen,
-            GeneratingWorld = WorldGen.generatingWorld,
-            Gen = WorldGen.gen,
-            NoTileActions = WorldGen.noTileActions,
-            NoMapUpdate = WorldGen.noMapUpdate,
-            TileSolid56 = Main.tileSolid[56],
-            TileSolid225 = Main.tileSolid[225],
-            TileSolid484 = Main.tileSolid[484]
-        };
-
-        internal void Restore()
-        {
-            WorldGen._genRand = GenRandom;
-            Main.rand = MainRandom;
-            GenVars.configuration = Configuration;
-            GenVars.structures = Structures;
-            GenVars.worldSurfaceLow = WorldSurfaceLow;
-            GenVars.worldSurface = WorldSurface;
-            GenVars.worldSurfaceHigh = WorldSurfaceHigh;
-            GenVars.rockLayerLow = RockLayerLow;
-            GenVars.rockLayer = RockLayer;
-            GenVars.rockLayerHigh = RockLayerHigh;
-            GenVars.skyLakes = SkyLakes;
-            GenVars.UndergroundDesertLocation = UndergroundDesert;
-            WorldGen.drunkWorldGen = Drunk;
-            WorldGen.getGoodWorldGen = Good;
-            WorldGen.tenthAnniversaryWorldGen = Anniversary;
-            WorldGen.dontStarveWorldGen = Starve;
-            WorldGen.notTheBees = Bees;
-            WorldGen.remixWorldGen = Remix;
-            WorldGen.noTrapsWorldGen = NoTraps;
-            WorldGen.everythingWorldGen = Everything;
-            WorldGen.generatingWorld = GeneratingWorld;
-            WorldGen.gen = Gen;
-            WorldGen.noTileActions = NoTileActions;
-            WorldGen.noMapUpdate = NoMapUpdate;
-            Main.tileSolid[56] = TileSolid56;
-            Main.tileSolid[225] = TileSolid225;
-            Main.tileSolid[484] = TileSolid484;
-        }
+        if (!busy && incomingRevision != revision)
+            RefreshRendering();
+        revision = incomingRevision;
     }
 }

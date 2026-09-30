@@ -28,7 +28,7 @@ internal sealed class BossVoteSystem : ModSystem
     internal static void RequestVote(int option)
     {
         BossVoteSystem system = ModContent.GetInstance<BossVoteSystem>();
-        if (!system.Active || option < 0 || option >= FightPresets.Count)
+        if (!system.Active || !FightPresets.IsAvailable(option))
             return;
 
         if (Main.netMode == NetmodeID.MultiplayerClient)
@@ -49,7 +49,7 @@ internal sealed class BossVoteSystem : ModSystem
         if (Main.netMode == NetmodeID.MultiplayerClient || !Active || ballotId != BallotId
             || !ModContent.GetInstance<RoundManager>().IsVoting
             || playerId < 0 || playerId >= Main.maxPlayers || Main.player[playerId]?.active != true
-            || option < 0 || option >= FightPresets.Count)
+            || !FightPresets.IsAvailable(option))
             return;
         if (votes.TryGetValue(playerId, out int previous) && previous == option)
             return;
@@ -83,8 +83,9 @@ internal sealed class BossVoteSystem : ModSystem
             return Winner;
 
         RebuildVoters();
-        int best = voters.Max(group => group.Count);
-        int[] winners = Enumerable.Range(0, FightPresets.Count)
+        int[] available = Enumerable.Range(0, FightPresets.Count).Where(FightPresets.IsAvailable).ToArray();
+        int best = available.Max(index => voters[index].Count);
+        int[] winners = available
             .Where(index => voters[index].Count == best).ToArray();
         Winner = winners[Main.rand.Next(winners.Length)];
         Active = false;

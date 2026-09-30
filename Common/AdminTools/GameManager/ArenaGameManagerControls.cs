@@ -61,7 +61,7 @@ internal sealed class ArenaGameStatusPanel : UIPanel
     {
         RoundManager.RoundPhase.WaitingForPlayers => "Waiting for players",
         RoundManager.RoundPhase.VotingOrEndScreen => "Voting",
-        RoundManager.RoundPhase.Generating => "Preparing arena",
+        RoundManager.RoundPhase.Generating => "Generating arena",
         RoundManager.RoundPhase.FreezeCountdown => "Starting round",
         RoundManager.RoundPhase.Playing => "Round in progress",
         _ => "Waiting"

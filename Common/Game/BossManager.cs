@@ -56,8 +56,10 @@ internal sealed class BossManager : ModSystem
         PrepareBossEnvironment(preset.Boss.Type);
         roundArea = new Rectangle(layout.ArenaBounds.X * 16, layout.ArenaBounds.Y * 16,
             layout.ArenaBounds.Width * 16, layout.ArenaBounds.Height * 16);
-        bossArea = new Rectangle(layout.BossBounds.X * 16, layout.BossBounds.Y * 16,
-            layout.BossBounds.Width * 16, layout.BossBounds.Height * 16);
+        // Plantera must be able to pursue players through both mirrored cave networks.
+        Rectangle bossTiles = preset.Boss.Type == NPCID.Plantera ? layout.ArenaBounds : layout.BossBounds;
+        bossArea = new Rectangle(bossTiles.X * 16, bossTiles.Y * 16,
+            bossTiles.Width * 16, bossTiles.Height * 16);
         ClearRoundProjectiles();
 
         Point spawn = layout.BossSpawn;

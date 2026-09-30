@@ -1,4 +1,6 @@
 using PvPArenas.Common.Game.TeamBalancing;
+using PvPArenas.Common.Generation;
+using ErkySSC.Common.RegionProtection;
 using PvPFramework.Common.Scoreboard;
 using System;
 using System.Collections.Generic;
@@ -14,6 +16,7 @@ internal sealed class ArenaPlayer : ModPlayer
 {
     private bool roundPrepared;
     private bool arenaSpawnActive;
+    private bool generationStaged;
 
     internal int SelectedLoadoutIndex;
 
@@ -80,9 +83,15 @@ internal sealed class ArenaPlayer : ModPlayer
         Player.controlUseItem = Player.controlUseTile = Player.controlThrow = false;
     }
 
+    public override bool CanUseItem(Item item) =>
+        ModContent.GetInstance<RoundManager>().CurrentPhase != RoundManager.RoundPhase.Generating;
+
     public override void PostUpdate()
     {
         RoundManager manager = ModContent.GetInstance<RoundManager>();
+
+        if (manager.CurrentPhase != RoundManager.RoundPhase.Generating)
+            generationStaged = false;
 
         if (manager.CurrentPhase is RoundManager.RoundPhase.WaitingForPlayers
     or RoundManager.RoundPhase.VotingOrEndScreen)
@@ -111,6 +120,18 @@ internal sealed class ArenaPlayer : ModPlayer
             Player.immuneTime = Math.Max(Player.immuneTime, 2);
             Player.immuneNoBlink = true;
             Player.velocity = Vector2.Zero;
+        }
+
+        if (manager.CurrentPhase == RoundManager.RoundPhase.Generating && Main.netMode == NetmodeID.Server)
+        {
+            if (!generationStaged)
+                Stage(Player, manager.StagingSpawn);
+            Vector2 position = SpawnPosition(Player, manager.StagingSpawn);
+            if (!Player.dead && Player.position != position)
+            {
+                Player.position = position;
+                RegionTeleportSystem.Synchronize(Player);
+            }
         }
 
         if ((manager.CurrentPhase is RoundManager.RoundPhase.FreezeCountdown or RoundManager.RoundPhase.Playing)
@@ -147,7 +168,7 @@ internal sealed class ArenaPlayer : ModPlayer
         if (player?.active != true || preset == null || layout == null)
             return;
 
-        RoundManager.SendArenaSections(player, layout);
+        ArenaTileSync.Send(layout.ArenaBounds, player.whoAmI);
 
         if (player.dead)
             player.Spawn(PlayerSpawnContext.ReviveFromDeath);
@@ -177,6 +198,7 @@ internal sealed class ArenaPlayer : ModPlayer
 
             ArenaPlayer arenaPlayer = player.GetModPlayer<ArenaPlayer>();
             arenaPlayer.roundPrepared = false;
+            arenaPlayer.generationStaged = false;
             arenaPlayer.SelectedLoadoutIndex = 0;
             arenaPlayer.ResetArenaSpawn();
             ClearCarriedItems(player, sync: Main.netMode == NetmodeID.Server);
@@ -187,6 +209,28 @@ internal sealed class ArenaPlayer : ModPlayer
                     NetMessage.SendData(MessageID.TogglePVP, -1, -1, null, player.whoAmI);
             }
         }
+    }
+
+    internal static void Stage(Player player, Point spawn)
+    {
+        if (Main.netMode != NetmodeID.Server || player?.active != true)
+            return;
+        ArenaPlayer arenaPlayer = player.GetModPlayer<ArenaPlayer>();
+        arenaPlayer.generationStaged = true;
+        arenaPlayer.roundPrepared = false;
+        arenaPlayer.ResetArenaSpawn();
+        player.chest = -1;
+        player.sign = -1;
+        player.tileEntityAnchor.Clear();
+        NetMessage.SendData(MessageID.SyncPlayerChest, player.whoAmI, -1, null, -1);
+        ClearCarriedItems(player, sync: true);
+        if (player.dead)
+            player.Spawn(PlayerSpawnContext.ReviveFromDeath);
+        player.hostile = false;
+        player.mount.Dismount(player);
+        player.RemoveAllGrapplingHooks();
+        Teleport(player, spawn);
+        NetMessage.SendData(MessageID.TogglePVP, -1, -1, null, player.whoAmI);
     }
 
     private static void OnTrySwitchingLoadout(On_Player.orig_TrySwitchingLoadout orig,
@@ -206,6 +250,12 @@ internal sealed class ArenaPlayer : ModPlayer
         orig(player, context);
 
         RoundManager manager = ModContent.GetInstance<RoundManager>();
+        if (manager.CurrentPhase == RoundManager.RoundPhase.Generating)
+        {
+            if (Main.netMode == NetmodeID.Server)
+                Stage(player, manager.StagingSpawn);
+            return;
+        }
         Team team = (Team)player.team;
         if (team is not (Team.Red or Team.Blue)
             || manager.CurrentPhase is not (RoundManager.RoundPhase.Generating
@@ -387,9 +437,7 @@ internal sealed class ArenaPlayer : ModPlayer
     {
         RoundManager manager = ModContent.GetInstance<RoundManager>();
 
-        if (manager.CurrentPhase is not (
-            RoundManager.RoundPhase.Generating
-            or RoundManager.RoundPhase.FreezeCountdown))
+        if (manager.CurrentPhase != RoundManager.RoundPhase.FreezeCountdown)
         {
             return;
         }
@@ -431,9 +479,7 @@ internal sealed class ArenaPlayer : ModPlayer
 
         RoundManager manager = ModContent.GetInstance<RoundManager>();
 
-        if (manager.CurrentPhase is not (
-            RoundManager.RoundPhase.Generating
-            or RoundManager.RoundPhase.FreezeCountdown))
+        if (manager.CurrentPhase != RoundManager.RoundPhase.FreezeCountdown)
         {
             Log.Chat(
                 $"[LoadoutSelect] Rejected for player {playerId}: " +
@@ -660,12 +706,14 @@ internal sealed class ArenaPlayer : ModPlayer
 
     private static void Teleport(Player player, Point tile)
     {
-        Vector2 position = new(tile.X * 16f + 8f - player.width / 2f, tile.Y * 16f - player.height);
+        Vector2 position = SpawnPosition(player, tile);
         player.Teleport(position, TeleportationStyleID.RodOfDiscord);
         player.velocity = Vector2.Zero;
 
         if (Main.netMode == NetmodeID.Server)
-            NetMessage.SendData(MessageID.TeleportEntity, -1, -1, null, 0, player.whoAmI,
-                position.X, position.Y, TeleportationStyleID.RodOfDiscord);
+            RegionTeleportSystem.Synchronize(player, TeleportationStyleID.RodOfDiscord);
     }
+
+    private static Vector2 SpawnPosition(Player player, Point tile) =>
+        new(tile.X * 16f + 8f - player.width / 2f, tile.Y * 16f - player.height);
 }

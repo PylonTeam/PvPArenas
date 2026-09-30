@@ -19,6 +19,7 @@
 
 	<ItemGroup>
 		<Compile Remove="Tests/**/*.cs" />
+		<Compile Remove="Docs/**/*.cs" />
 	</ItemGroup>
 	<!-- Makes use of Krafs Publicizer when compiling tModLoader.dll, making all access modifiers public -->
 	<ItemGroup>
