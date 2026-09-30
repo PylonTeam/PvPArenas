@@ -7,8 +7,8 @@ Voting: {
 }
 
 Round: {
-    PreparationFailedStatus: Arena setup failed
-    PreparationFailed: "Arena setup failed: {0} The selected boss has been kept. Fix the arena, then use Start Round in Arena Game Manager to retry, or Start Voting to choose again."
+	PreparationFailedStatus: Arena setup failed
+	PreparationFailed: Arena setup failed: {0} The selected boss has been kept. Fix the arena, then use Start Round in Arena Game Manager to retry, or Start Voting to choose again.
 }
 
 Configs: {
