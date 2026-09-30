@@ -75,8 +75,6 @@ internal abstract class UIDraggablePanel : UIElement
         base.Update(gameTime);
         if (IsMouseHovering)
             Main.LocalPlayer.mouseInterface = true;
-        if (refreshButton.IsMouseHovering)
-            Main.instance.MouseText("Refresh");
         if (!dragging || Parent == null)
             return;
         if (!Main.mouseLeft)
@@ -90,6 +88,13 @@ internal abstract class UIDraggablePanel : UIElement
         Left.Set(MathHelper.Clamp(mouse.X, 0f, Math.Max(0f, parent.Width - GetDimensions().Width)), 0f);
         Top.Set(MathHelper.Clamp(mouse.Y, 0f, Math.Max(0f, parent.Height - GetDimensions().Height)), 0f);
         Recalculate();
+    }
+
+    protected override void DrawSelf(Microsoft.Xna.Framework.Graphics.SpriteBatch spriteBatch)
+    {
+        base.DrawSelf(spriteBatch);
+        if (refreshButton.IsMouseHovering)
+            Main.instance.MouseText("Refresh");
     }
 
     public override void LeftMouseDown(UIMouseEvent evt)

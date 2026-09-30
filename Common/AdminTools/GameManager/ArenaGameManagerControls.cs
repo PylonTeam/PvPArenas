@@ -172,9 +172,6 @@ internal sealed class ArenaGameCommandButton : UIPanel
             return;
 
         Main.LocalPlayer.mouseInterface = true;
-        string value = tooltip?.Invoke();
-        if (!string.IsNullOrWhiteSpace(value))
-            Main.instance.MouseText(value);
     }
 
     protected override void DrawSelf(SpriteBatch spriteBatch)
@@ -219,6 +216,14 @@ internal sealed class ArenaGameCommandButton : UIPanel
         Utils.DrawBorderString(spriteBatch, text,
             new Vector2(x, panel.Center.Y - size.Y / 2f + 3f),
             contentColor, scale);
+
+        // Mouse text is reset during drawing; submit it on every rendered frame.
+        if (IsMouseHovering)
+        {
+            string value = tooltip?.Invoke();
+            if (!string.IsNullOrWhiteSpace(value))
+                Main.instance.MouseText(value);
+        }
     }
 
     private bool Enabled => enabled?.Invoke() ?? true;
