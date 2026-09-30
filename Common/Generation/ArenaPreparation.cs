@@ -111,9 +111,14 @@ internal sealed class ArenaPreparation : ModSystem
                 if (area.IsEmpty)
                     return false;
                 if (restoringAuthored) progressLog?.Report("Restoring authored terrain", area.Right / (double)Main.maxTilesX);
-                progressLog?.SetOperation("Framing tiles");
-                FrameOutsideLobby(area);
-                progressLog?.SetOperation(null);
+                // The authored snapshot already contains valid frames. Reframing it
+                // against the next, still-jungle strip can change or destroy objects.
+                if (!restoringAuthored)
+                {
+                    progressLog?.SetOperation("Framing tiles");
+                    FrameOutsideLobby(area);
+                    progressLog?.SetOperation(null);
+                }
                 pendingSync = pendingSync.IsEmpty ? area : Rectangle.Union(pendingSync, area);
                 if (++stepsSinceSync >= 8)
                     FlushTiles();
@@ -123,6 +128,12 @@ internal sealed class ArenaPreparation : ModSystem
             {
                 steps.Dispose();
                 steps = null;
+                if (restoringAuthored)
+                {
+                    progressLog?.SetOperation("Verifying authored tiles");
+                    ArenaTemplate.VerifyRestore(protectedLobby);
+                    progressLog?.SetOperation(null);
+                }
                 authoredWorldChanged = !restoringAuthored;
             }
             progressLog?.Report("Finishing tile synchronization", 0);
@@ -161,7 +172,7 @@ internal sealed class ArenaPreparation : ModSystem
         if (lobbyFramingState?.Length != count) lobbyFramingState = new TileWallWireStateData[count];
         TileWallWireStateData[] states = Main.tile.GetData<TileWallWireStateData>();
         for (int x = 0; x < protectedLobby.Width; x++)
-            Array.Copy(states, (protectedLobby.Left + x) * Main.maxTilesY + protectedLobby.Top,
+            Array.Copy(states, (protectedLobby.Left + x) * Main.tile.Height + protectedLobby.Top,
                 lobbyFramingState, x * protectedLobby.Height, protectedLobby.Height);
         try
         {
@@ -177,7 +188,7 @@ internal sealed class ArenaPreparation : ModSystem
         {
             for (int x = 0; x < protectedLobby.Width; x++)
                 Array.Copy(lobbyFramingState, x * protectedLobby.Height, states,
-                    (protectedLobby.Left + x) * Main.maxTilesY + protectedLobby.Top, protectedLobby.Height);
+                    (protectedLobby.Left + x) * Main.tile.Height + protectedLobby.Top, protectedLobby.Height);
         }
     }
 

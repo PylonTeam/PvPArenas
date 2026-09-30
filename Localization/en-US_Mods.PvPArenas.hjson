@@ -12,7 +12,7 @@ LoadoutSelector: {
 	ArrangeItems: Arrange items
 	Done: Done
 	Sandbox: Sandbox
-	UnnamedLoadout: "Loadout {0}"
+	UnnamedLoadout: Loadout {0}
 }
 
 Round: {

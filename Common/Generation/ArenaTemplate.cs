@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using Terraria.DataStructures;
 using Terraria.ID;
 
@@ -23,7 +24,16 @@ internal sealed class ArenaTemplate : ModSystem
         if (Main.netMode != NetmodeID.Server || Main.maxTilesX != ArenaWorldSystem.Width
             || Main.maxTilesY != ArenaWorldSystem.Height)
             return;
-        tiles = CurrentTiles().Select(array => (Array)array.Clone()).ToArray();
+        ArenaWorldSystem.ConfigureAuthoredLayers();
+        // Tilemap.Height is the memory stride, not the loaded world's height. Terraria
+        // can retain a 2401-row allocation for this 600-row world. Store only live tiles.
+        tiles = CurrentTiles().Select(array =>
+        {
+            Array copy = Array.CreateInstance(array.GetType().GetElementType(), Main.maxTilesX * Main.maxTilesY);
+            for (int x = 0; x < Main.maxTilesX; x++)
+                Array.Copy(array, x * Main.tile.Height, copy, x * Main.maxTilesY, Main.maxTilesY);
+            return copy;
+        }).ToArray();
         chests = Main.chest.Select(CloneChest).ToArray();
         signs = Main.sign.Select(CloneSign).ToArray();
         entities = TileEntity.ByID.Values.Select(entity =>
@@ -35,6 +45,8 @@ internal sealed class ArenaTemplate : ModSystem
         }).ToArray();
         surface = Main.worldSurface;
         rock = Main.rockLayer;
+        Log.Debug($"[worldgen] PASS | Template captured | Tiles: {Main.maxTilesX * Main.maxTilesY} | "
+            + $"World: {Main.maxTilesX}x{Main.maxTilesY} | TileStorage: {Main.tile.Width}x{Main.tile.Height}");
     }
 
     internal static IEnumerable<Rectangle> Restore(Rectangle protectedLobby)
@@ -57,20 +69,62 @@ internal sealed class ArenaTemplate : ModSystem
             for (int x = start; x < end; x++)
             for (int data = 0; data < tiles.Length; data++)
             {
-                int offset = x * Main.maxTilesY;
+                int source = x * Main.maxTilesY, target = x * Main.tile.Height;
                 if (protectedLobby.Width > 0 && x >= protectedLobby.Left && x < protectedLobby.Right)
                 {
-                    Array.Copy(tiles[data], offset, current[data], offset, protectedLobby.Top);
-                    Array.Copy(tiles[data], offset + protectedLobby.Bottom, current[data], offset + protectedLobby.Bottom,
+                    Array.Copy(tiles[data], source, current[data], target, protectedLobby.Top);
+                    Array.Copy(tiles[data], source + protectedLobby.Bottom, current[data], target + protectedLobby.Bottom,
                         Main.maxTilesY - protectedLobby.Bottom);
                 }
                 else
-                    Array.Copy(tiles[data], offset, current[data], offset, Main.maxTilesY);
+                    Array.Copy(tiles[data], source, current[data], target, Main.maxTilesY);
             }
             yield return new Rectangle(start, 0, end - start, Main.maxTilesY);
         }
         if (Main.netMode == NetmodeID.Server)
             Liquid.ReInit();
+    }
+
+    /// <summary>Checks every restored tile component; preserved lobby tiles are explicitly excluded.</summary>
+    internal static void VerifyRestore(Rectangle protectedLobby)
+    {
+        if (Main.netMode != NetmodeID.Server)
+            throw new InvalidOperationException("Only the server can verify an arena restore.");
+        bool[] mismatches = new bool[Main.maxTilesX * Main.maxTilesY];
+        Compare((TileTypeData[])tiles[0], Main.tile.GetData<TileTypeData>(), mismatches);
+        Compare((WallTypeData[])tiles[1], Main.tile.GetData<WallTypeData>(), mismatches);
+        Compare((LiquidData[])tiles[2], Main.tile.GetData<LiquidData>(), mismatches);
+        Compare((TileWallBrightnessInvisibilityData[])tiles[3], Main.tile.GetData<TileWallBrightnessInvisibilityData>(), mismatches);
+        Compare((TileWallWireStateData[])tiles[4], Main.tile.GetData<TileWallWireStateData>(), mismatches);
+        int total = 0, failed = 0;
+        Point first = new(-1, -1);
+        for (int x = 0; x < Main.maxTilesX; x++)
+        for (int y = 0; y < Main.maxTilesY; y++)
+        {
+            if (protectedLobby.Contains(x, y)) continue;
+            total++;
+            if (!mismatches[x * Main.maxTilesY + y]) continue;
+            if (failed++ == 0) first = new(x, y);
+        }
+        Log.Debug($"[worldgen] {(failed == 0 ? "PASS" : "FAIL")} | Restore Arenas_v10 | "
+            + $"TilesVerifiedToWork: {total - failed}/{total} | LobbyExcluded: {mismatches.Length - total} | "
+            + $"Stride: {Main.tile.Height} | FirstMismatch: {first}");
+        if (failed > 0)
+            throw new InvalidOperationException($"Arena restore verification failed: {failed}/{total} tiles differ; first at {first}. See server.log.");
+    }
+
+    private static void Compare<T>(T[] expected, T[] actual, bool[] mismatches) where T : unmanaged
+    {
+        for (int x = 0; x < Main.maxTilesX; x++)
+        {
+            ReadOnlySpan<byte> source = MemoryMarshal.AsBytes(expected.AsSpan(x * Main.maxTilesY, Main.maxTilesY));
+            ReadOnlySpan<byte> target = MemoryMarshal.AsBytes(actual.AsSpan(x * Main.tile.Height, Main.maxTilesY));
+            if (source.SequenceEqual(target)) continue;
+            int size = source.Length / Main.maxTilesY;
+            for (int y = 0; y < Main.maxTilesY; y++)
+                if (!source.Slice(y * size, size).SequenceEqual(target.Slice(y * size, size)))
+                    mismatches[x * Main.maxTilesY + y] = true;
+        }
     }
 
     internal static void ClearEntitiesOutside(Rectangle protectedLobby)

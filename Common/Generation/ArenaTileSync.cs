@@ -15,11 +15,13 @@ internal static class ArenaTileSync
             return;
         int left = bounds.Left / 200, right = (bounds.Right - 1) / 200;
         int top = bounds.Top / 150, bottom = (bounds.Bottom - 1) / 150;
+        int clients = 0, sections = 0;
         for (int client = 0; client < Main.maxPlayers; client++)
         {
             if (toClient >= 0 && client != toClient || !Netplay.Clients[client].IsConnected()
                 || Netplay.Clients[client].State < 3)
                 continue;
+            clients++;
             for (int sx = left; sx <= right; sx++)
             for (int sy = top; sy <= bottom; sy++)
             {
@@ -28,8 +30,11 @@ internal static class ArenaTileSync
                 NetMessage.SendData(MessageID.TileSection, client, -1, null, x, y,
                     Math.Min(200, Main.maxTilesX - x), Math.Min(150, Main.maxTilesY - y));
                 Netplay.Clients[client].TileSections[sx, sy] = true;
+                sections++;
             }
             NetMessage.SendData(MessageID.TileFrameSection, client, -1, null, left, top, right, bottom);
         }
+        Log.Debug($"[worldgen] Tile sync | SectionsQueued: {sections}/{clients * (right - left + 1) * (bottom - top + 1)} | "
+            + $"Clients: {clients} | Bounds: {bounds} | IDs: {MessageID.TileSection}/{MessageID.TileFrameSection}");
     }
 }

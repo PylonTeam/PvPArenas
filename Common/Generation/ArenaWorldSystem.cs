@@ -14,6 +14,19 @@ internal sealed class ArenaWorldSystem : ModSystem
     internal const int Height = 600;
     internal const int Margin = 20;
     internal static Rectangle PlayBounds => new(Margin, Margin, Width - Margin * 2, Height - Margin * 2);
+    internal static bool IsCompactWorld => Main.maxTilesX == Width && Main.maxTilesY == Height;
+
+    internal static void ConfigureAuthoredLayers()
+    {
+        if (Main.netMode != NetmodeID.Server || !IsCompactWorld) return;
+        double previousSurface = Main.worldSurface, previousRock = Main.rockLayer;
+        // PlantAlch chooses [(rock + height) / 2, height - 20). The bundled
+        // 558/588 anchors invert that range in a 600-tile world.
+        Main.rockLayer = Math.Min(Main.rockLayer, Height - 42);
+        Main.worldSurface = Math.Min(Main.worldSurface, Main.rockLayer - 30);
+        Log.Debug($"[worldgen] PASS | Authored layers | Surface: {previousSurface}->{Main.worldSurface} | "
+            + $"Rock: {previousRock}->{Main.rockLayer} | Underworld: {Main.UnderworldLayer}");
+    }
 
     private WorldFileData selectedWorld;
     private WorldFileData sessionWorld;
