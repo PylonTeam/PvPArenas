@@ -1,0 +1,230 @@
+Configs: {
+	ServerConfig: {
+		DisplayName: Server Config
+
+		Headers: {
+			BossFights: Boss Fights
+			RoundTime: Round Time
+			GemRewards: Gem Rewards
+		}
+
+		FightPresets: {
+			Label: Fight Presets
+			Tooltip: ""
+		}
+
+		RoundDurationSeconds: {
+			Label: Round Duration Seconds
+			Tooltip: ""
+		}
+
+		FreezeCountdownSeconds: {
+			Label: Freeze Countdown Seconds
+			Tooltip: ""
+		}
+
+		VotingDurationSeconds: {
+			Label: Voting Duration Seconds
+			Tooltip: ""
+		}
+
+		VictoryGemReward: {
+			Label: Victory Gem Reward
+			Tooltip: ""
+		}
+	}
+
+	BossFightPreset: {
+		Tooltip: ""
+
+		Boss: {
+			Label: Boss
+			Tooltip: ""
+		}
+
+		Loadouts: {
+			Label: Loadouts
+			Tooltip: ""
+		}
+
+		ArenaKind: {
+			Label: Arena Kind
+			Tooltip: ""
+		}
+
+		ArenaWidthTiles: {
+			Label: Arena Width Tiles
+			Tooltip: ""
+		}
+
+		ArenaHeightTiles: {
+			Label: Arena Height Tiles
+			Tooltip: ""
+		}
+
+		MaxHealth: {
+			Label: Max Health
+			Tooltip: ""
+		}
+
+		MaxMana: {
+			Label: Max Mana
+			Tooltip: ""
+		}
+
+		GracePeriodSeconds: {
+			Label: Grace Period Seconds
+			Tooltip: ""
+		}
+	}
+
+	ArenaLoadoutOption: {
+		Tooltip: ""
+
+		Name: {
+			Label: Name
+			Tooltip: ""
+		}
+
+		Loadout: {
+			Label: Loadout
+			Tooltip: ""
+		}
+	}
+
+	Loadout: {
+		Tooltip: ""
+
+		Armor: {
+			Label: Armor
+			Tooltip: ""
+		}
+
+		Accessories: {
+			Label: Accessories
+			Tooltip: ""
+		}
+
+		Equipment: {
+			Label: Equipment
+			Tooltip: ""
+		}
+
+		Inventory: {
+			Label: Inventory
+			Tooltip: ""
+		}
+
+		MaxHealth: {
+			Label: Max Health
+			Tooltip: ""
+		}
+
+		MaxMana: {
+			Label: Max Mana
+			Tooltip: ""
+		}
+	}
+
+	LoadoutArmor: {
+		Tooltip: ""
+
+		Head: {
+			Label: Head
+			Tooltip: ""
+		}
+
+		Body: {
+			Label: Body
+			Tooltip: ""
+		}
+
+		Legs: {
+			Label: Legs
+			Tooltip: ""
+		}
+	}
+
+	LoadoutAccessories: {
+		Tooltip: ""
+
+		Accessory1: {
+			Label: Accessory1
+			Tooltip: ""
+		}
+
+		Accessory2: {
+			Label: Accessory2
+			Tooltip: ""
+		}
+
+		Accessory3: {
+			Label: Accessory3
+			Tooltip: ""
+		}
+
+		Accessory4: {
+			Label: Accessory4
+			Tooltip: ""
+		}
+
+		Accessory5: {
+			Label: Accessory5
+			Tooltip: ""
+		}
+	}
+
+	LoadoutEquipment: {
+		Tooltip: ""
+
+		GrapplingHook: {
+			Label: Grappling Hook
+			Tooltip: ""
+		}
+
+		Mount: {
+			Label: Mount
+			Tooltip: ""
+		}
+	}
+
+	LoadoutItem: {
+		Tooltip: ""
+
+		Item: {
+			Label: Item
+			Tooltip: ""
+		}
+
+		Stack: {
+			Label: Stack
+			Tooltip: ""
+		}
+	}
+
+	ArenaKind: {
+		Tooltip: ""
+
+		WorldCenterSurface: {
+			Label: World Center Surface
+			Tooltip: ""
+		}
+
+		UndergroundJungle: {
+			Label: Underground Jungle
+			Tooltip: ""
+		}
+
+		JungleTemple: {
+			Label: Jungle Temple
+			Tooltip: ""
+		}
+	}
+}
+
+Tools: {
+	ArenaGameManagerPanel: {
+		Title: Arena Game Manager
+		RoundControls: Round Controls
+	}
+}

@@ -49,9 +49,6 @@ internal sealed class ScorelineUISystem : ModSystem
         if (manager.CurrentPhase == RoundManager.RoundPhase.FreezeCountdown)
             DrawCenterCountdown(manager);
 
-        if (!ModContent.GetInstance<ClientConfig>().ShowTopScoreboard)
-            return true;
-
         string status = Status(manager);
         bool playing = manager.CurrentPhase == RoundManager.RoundPhase.Playing;
         bool chooseTeam = manager.CurrentPhase == RoundManager.RoundPhase.VotingOrEndScreen
