@@ -50,7 +50,7 @@ internal sealed class ArenaPlayer : ModPlayer
         TeamBalancer.AssignJoiningPlayer(Player);
     }
 
-    // Max life/mana come from the round loadout, forced every tick here because
+    // Max life/mana come from the boss fight, forced every tick here because
     // tModLoader resets statLifeMax to the character's vanilla value each update
     // (a one-time assignment would be wiped next frame).
     public override void ModifyMaxStats(out StatModifier health, out StatModifier mana)
@@ -64,13 +64,9 @@ internal sealed class ArenaPlayer : ModPlayer
             || !manager.TryGetSelectedPreset(out BossFightPreset preset))
             return;
 
-        // Only the stats are needed here, so use the base loadout to avoid the
-        // per-tick inventory-reorder allocation of the full resolve.
-        Loadout loadout = ResolveBaseLoadout(preset, SelectedLoadoutIndex);
-
         // Additive 0 + Flat = value forces the stat to an absolute maximum.
-        health = new StatModifier(0f, 1f, Math.Max(1, loadout.MaxHealth));
-        mana = new StatModifier(0f, 1f, Math.Max(0, loadout.MaxMana));
+        health = new StatModifier(0f, 1f, Math.Clamp(preset.MaxHealth, 1, 500));
+        mana = new StatModifier(0f, 1f, Math.Clamp(preset.MaxMana, 0, 200));
     }
 
     public override void SetControls()
@@ -540,8 +536,8 @@ internal sealed class ArenaPlayer : ModPlayer
         player.ghost = false;
         player.respawnTimer = 0;
         // Max life/mana are enforced each tick in ModifyMaxStats; fill up to them here.
-        player.statLife = Math.Max(1, loadout.MaxHealth);
-        player.statMana = Math.Max(0, loadout.MaxMana);
+        player.statLife = Math.Clamp(preset.MaxHealth, 1, 500);
+        player.statMana = Math.Clamp(preset.MaxMana, 0, 200);
 
         Log.Chat($"[Loadout] Applied to {player.name}: {CountNonAir(player.inventory)} inventory items, "
             + $"armor '{player.armor[0].Name}'/'{player.armor[1].Name}'/'{player.armor[2].Name}', "

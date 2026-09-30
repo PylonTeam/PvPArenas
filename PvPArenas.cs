@@ -28,7 +28,7 @@ public sealed class PvPArenas : Mod
             case PacketType.CastVote:
                 if (Main.netMode != NetmodeID.Server)
                     return;
-                ModContent.GetInstance<BossVoteSystem>().CastVote(whoAmI, reader.ReadByte());
+                ModContent.GetInstance<BossVoteSystem>().CastVote(whoAmI, reader.ReadUInt32(), reader.ReadByte());
                 break;
 
             case PacketType.AdminRoundAction:

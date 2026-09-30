@@ -1,16 +1,40 @@
+Voting: {
+	ActiveHeader: Arena Vote
+	CompleteHeader: Vote Complete
+	ChooseBoss: Choose the next boss fight
+	VoteCount: "{0} votes cast · Most votes wins"
+	Selected: Selected
+}
+
 Configs: {
 	ServerConfig: {
 		DisplayName: Server Config
 
 		Headers: {
 			BossFights: Boss Fights
+			Voting: Voting
 			RoundTime: Round Time
 			GemRewards: Gem Rewards
 		}
 
-		FightPresets: {
-			Label: Fight Presets
-			Tooltip: ""
+		KingSlime: {
+			Label: King Slime
+			Tooltip: Player stats, loadouts, and arena settings for King Slime.
+		}
+
+		EyeOfCthulhu: {
+			Label: Eye of Cthulhu
+			Tooltip: Player stats, loadouts, and arena settings for the Eye of Cthulhu.
+		}
+
+		Plantera: {
+			Label: Plantera
+			Tooltip: Player stats, loadouts, and arena settings for Plantera.
+		}
+
+		Golem: {
+			Label: Golem
+			Tooltip: Player stats, loadouts, and arena settings for Golem.
 		}
 
 		RoundDurationSeconds: {
@@ -24,8 +48,18 @@ Configs: {
 		}
 
 		VotingDurationSeconds: {
-			Label: Voting Duration Seconds
-			Tooltip: ""
+			Label: Voting Duration (seconds)
+			Tooltip: Maximum voting time after the results screen closes. Most votes wins; ties and empty ballots choose randomly.
+		}
+
+		EndVotingWhenEveryoneVoted: {
+			Label: End When Everyone Has Voted
+			Tooltip: Finish as soon as every active player has voted, like ErkySSC. Disable to always wait for the timer.
+		}
+
+		ResultsDurationSeconds: {
+			Label: Results Display (seconds)
+			Tooltip: Time reserved for the end screen before voting opens. Set to 0 to skip it.
 		}
 
 		VictoryGemReward: {
@@ -63,13 +97,13 @@ Configs: {
 		}
 
 		MaxHealth: {
-			Label: Max Health
-			Tooltip: ""
+			Label: Player Health
+			Tooltip: Base maximum health for every player and loadout in this boss fight.
 		}
 
 		MaxMana: {
-			Label: Max Mana
-			Tooltip: ""
+			Label: Player Mana
+			Tooltip: Base maximum mana for every player and loadout in this boss fight.
 		}
 
 		GracePeriodSeconds: {

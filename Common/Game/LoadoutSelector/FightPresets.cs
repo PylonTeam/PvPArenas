@@ -6,74 +6,39 @@ namespace PvPArenas.Common.Game.LoadoutSelector;
 
 internal static class FightPresets
 {
-    public static List<BossFightPreset> CreateFightPresets() =>
-    [
-        new()
-        {
-            Boss = new NPCDefinition(NPCID.KingSlime),
-            ArenaKind = ArenaKind.WorldCenterSurface,
-            ArenaWidthTiles = 200,
-            ArenaHeightTiles = 100,
-            Loadouts = WithStats(CreatePreBossLoadouts(), 200, 100)
-        },
-        new()
-        {
-            Boss = new NPCDefinition(NPCID.EyeofCthulhu),
-            ArenaKind = ArenaKind.WorldCenterSurface,
-            ArenaWidthTiles = 200,
-            ArenaHeightTiles = 100,
-            Loadouts = WithStats(CreatePreBossLoadouts(), 200, 100)
-        },
-        new()
-        {
-            Boss = new NPCDefinition(NPCID.Plantera),
-            ArenaKind = ArenaKind.UndergroundJungle,
-            ArenaWidthTiles = 200,
-            ArenaHeightTiles = 100,
-            Loadouts = WithStats(CreatePostMechLoadouts(), 400, 180)
-        },
-        new()
-        {
-            Boss = new NPCDefinition(NPCID.Golem),
-            ArenaKind = ArenaKind.JungleTemple,
-            ArenaWidthTiles = 200,
-            ArenaHeightTiles = 100,
-            Loadouts = WithStats(CreatePostPlanteraLoadouts(), 500, 200)
-        },
-        new()
-        {
-            // Sandbox arena: no boss NPC. It is the 5th "arena" and runs bossless.
-            Boss = new NPCDefinition(),
-            ArenaKind = ArenaKind.WorldCenterSurface,
-            ArenaWidthTiles = 200,
-            ArenaHeightTiles = 100,
-            Loadouts = WithStats(CreateSandboxLoadouts(), 500, 200)
-        }
-    ];
+    internal const int Count = 4;
 
-    // Life/mana are per-loadout (not per-boss); stamp a tier's value onto every option.
-    private static List<ArenaLoadoutOption> WithStats(
-        List<ArenaLoadoutOption> options, int maxHealth, int maxMana)
+    internal static int BossType(int index) => index switch
     {
-        foreach (ArenaLoadoutOption option in options)
+        0 => NPCID.KingSlime,
+        1 => NPCID.EyeofCthulhu,
+        2 => NPCID.Plantera,
+        3 => NPCID.Golem,
+        _ => NPCID.None
+    };
+
+    internal static BossFightPreset Create(int index) => new()
+    {
+        Boss = new NPCDefinition(BossType(index)),
+        ArenaKind = index switch
         {
-            if (option?.Loadout == null)
-                continue;
-            option.Loadout.MaxHealth = maxHealth;
-            option.Loadout.MaxMana = maxMana;
+            2 => ArenaKind.UndergroundJungle,
+            3 => ArenaKind.JungleTemple,
+            _ => ArenaKind.WorldCenterSurface
+        },
+        ArenaWidthTiles = 200,
+        ArenaHeightTiles = 100,
+        MaxHealth = index < 2 ? 200 : index == 2 ? 400 : 500,
+        MaxMana = index < 2 ? 100 : index == 2 ? 180 : 200,
+        Loadouts = index switch
+        {
+            2 => CreatePostMechLoadouts(),
+            3 => CreatePostPlanteraLoadouts(),
+            _ => CreatePreBossLoadouts()
         }
+    };
 
-        return options;
-    }
-
-    // Sandbox mode: four empty loadouts the player fills in themselves via the item picker.
-    private static List<ArenaLoadoutOption> CreateSandboxLoadouts() =>
-    [
-        new() { Name = "1", Loadout = new() },
-        new() { Name = "2", Loadout = new() },
-        new() { Name = "3", Loadout = new() },
-        new() { Name = "4", Loadout = new() }
-    ];
+    public static List<BossFightPreset> CreateFightPresets() => [Create(0), Create(1), Create(2), Create(3)];
 
     #region Pre-Hardmode loadouts
 

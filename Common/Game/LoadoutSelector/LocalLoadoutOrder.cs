@@ -65,8 +65,6 @@ internal static class LocalLoadoutOrder
 
         return new Loadout
         {
-            MaxHealth = loadout?.MaxHealth ?? new Loadout().MaxHealth,
-            MaxMana = loadout?.MaxMana ?? new Loadout().MaxMana,
             Armor = loadout?.Armor,
             Accessories = loadout?.Accessories,
             Equipment = loadout?.Equipment,

@@ -1,3 +1,4 @@
+using Newtonsoft.Json;
 using System.Collections.Generic;
 using System.ComponentModel;
 using Terraria.ModLoader.Config;
@@ -6,12 +7,19 @@ namespace PvPArenas.Common.Game.LoadoutSelector;
 
 internal sealed class BossFightPreset
 {
-    public NPCDefinition Boss = new();
+    [JsonIgnore]
+    public NPCDefinition Boss { get; internal set; } = new();
+
+    [DefaultValue(500), Range(1, 500)]
+    public int MaxHealth = 500;
+
+    [DefaultValue(200), Range(0, 200)]
+    public int MaxMana = 200;
 
     [Expand(true)]
     public List<ArenaLoadoutOption> Loadouts = [];
 
-    [DefaultValue(ArenaKind.WorldCenterSurface)]
+    [JsonIgnore]
     public ArenaKind ArenaKind = ArenaKind.WorldCenterSurface;
 
     [DefaultValue(500), Range(100, 4000)]

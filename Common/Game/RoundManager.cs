@@ -55,6 +55,7 @@ internal sealed class RoundManager : ModSystem
     private int remainingTicks;
     private bool timerPaused;
     private bool idleHeld;
+    private bool showingResults;
     private int selectedPresetIndex = -1;
     private ArenaLayout currentLayout;
 
@@ -67,6 +68,9 @@ internal sealed class RoundManager : ModSystem
     internal int RemainingTicks => remainingTicks;
     internal bool IsTimerPaused => timerPaused;
     internal bool IsIdleHeld => idleHeld;
+    internal bool IsShowingResults => currentPhase == RoundPhase.VotingOrEndScreen && showingResults;
+    internal bool IsVoting => currentPhase == RoundPhase.VotingOrEndScreen && !showingResults
+        && ModContent.GetInstance<BossVoteSystem>().Active;
     internal int SelectedPresetIndex => selectedPresetIndex;
     internal ArenaLayout CurrentLayout => currentLayout;
 
@@ -119,6 +123,14 @@ internal sealed class RoundManager : ModSystem
             }
         }
 
+        if (!timerPaused && IsVoting
+            && ModContent.GetInstance<ServerConfig>().EndVotingWhenEveryoneVoted
+            && ModContent.GetInstance<BossVoteSystem>().AllPlayersVoted)
+        {
+            FinishVoting();
+            return;
+        }
+
         if (timerPaused || remainingTicks <= 0)
             return;
 
@@ -129,7 +141,12 @@ internal sealed class RoundManager : ModSystem
         switch (currentPhase)
         {
             case RoundPhase.VotingOrEndScreen:
-                PrepareRound();
+                if (showingResults)
+                    BeginVoting();
+                else if (ModContent.GetInstance<BossVoteSystem>().Active)
+                    FinishVoting();
+                else
+                    PrepareRound();
                 break;
             case RoundPhase.FreezeCountdown:
                 StartPlaying();
@@ -145,15 +162,8 @@ internal sealed class RoundManager : ModSystem
 
     internal bool TryGetSelectedPreset(out BossFightPreset preset)
     {
-        var presets = ModContent.GetInstance<ServerConfig>().FightPresets;
-        if (presets != null && selectedPresetIndex >= 0 && selectedPresetIndex < presets.Count)
-        {
-            preset = presets[selectedPresetIndex];
-            return BossVoteSystem.IsVotable(preset);
-        }
-
-        preset = null;
-        return false;
+        preset = ModContent.GetInstance<ServerConfig>().GetFightPreset(selectedPresetIndex);
+        return preset != null;
     }
 
     internal void NotifyBossDefeated(Player player, Team team)
@@ -248,6 +258,8 @@ internal sealed class RoundManager : ModSystem
                 pendingWinningTeam = Team.None;
                 pendingWinningPlayer = -1;
                 idleHeld = true;
+                showingResults = false;
+                ModContent.GetInstance<BossVoteSystem>().Reset();
                 selectedPresetIndex = -1;
                 currentLayout = null;
                 SetPhase(RoundPhase.WaitingForPlayers, 0);
@@ -262,7 +274,7 @@ internal sealed class RoundManager : ModSystem
         }
     }
 
-    private void StartIntermission()
+    private void StartIntermission(bool presentResults = false)
     {
         ArenaPlayer.ReleaseAll();
         TeamBalancer.AssignUnassignedPlayers();
@@ -273,16 +285,36 @@ internal sealed class RoundManager : ModSystem
         }
 
         ModContent.GetInstance<BossVoteSystem>().Reset();
-        selectedPresetIndex = FindFirstPlayablePreset();
-        int seconds = Math.Max(1, ModContent.GetInstance<ServerConfig>().VotingDurationSeconds);
-        SetPhase(RoundPhase.VotingOrEndScreen, SecondsToTicks(seconds));
+        selectedPresetIndex = 0;
+        int resultSeconds = ModContent.GetInstance<ServerConfig>().ResultsDurationSeconds;
+        showingResults = presentResults && resultSeconds > 0;
+        if (showingResults)
+            SetPhase(RoundPhase.VotingOrEndScreen, SecondsToTicks(resultSeconds));
+        else
+            BeginVoting();
+    }
+
+    private void BeginVoting()
+    {
+        EndScreenService.Hide();
+        showingResults = false;
+        int ticks = SecondsToTicks(Math.Clamp(ModContent.GetInstance<ServerConfig>().VotingDurationSeconds, 5, 300));
+        ModContent.GetInstance<BossVoteSystem>().Start(ticks);
+        SetPhase(RoundPhase.VotingOrEndScreen, ticks);
+    }
+
+    private void FinishVoting()
+    {
+        selectedPresetIndex = ModContent.GetInstance<BossVoteSystem>().Complete();
+        SetPhase(RoundPhase.VotingOrEndScreen, BossVotePresentation.ResultDurationTicks);
     }
 
     private void PrepareRound()
     {
         EndScreenService.Hide();
 
-        int votedPreset = ModContent.GetInstance<BossVoteSystem>().ResolveWinner();
+        showingResults = false;
+        int votedPreset = ModContent.GetInstance<BossVoteSystem>().Complete();
         if (votedPreset >= 0)
             selectedPresetIndex = votedPreset;
 
@@ -384,29 +416,20 @@ internal sealed class RoundManager : ModSystem
         if (reason == RoundEndReason.NoPlayers)
         {
             EndScreenService.Hide();
+            showingResults = false;
+            ModContent.GetInstance<BossVoteSystem>().Reset();
             selectedPresetIndex = -1;
             currentLayout = null;
             SetPhase(RoundPhase.WaitingForPlayers, 0);
             return;
         }
 
-        if (reason is RoundEndReason.BossDefeated or RoundEndReason.TimeExpired
-            or RoundEndReason.BossDespawned or RoundEndReason.AdminEnded)
+        bool presentResults = reason is RoundEndReason.BossDefeated or RoundEndReason.TimeExpired
+            or RoundEndReason.BossDespawned or RoundEndReason.AdminEnded;
+        if (presentResults)
             ArenaEndScreen.Present(winningTeam, winningPlayer);
 
-        StartIntermission();
-    }
-
-    private int FindFirstPlayablePreset()
-    {
-        var presets = ModContent.GetInstance<ServerConfig>().FightPresets;
-        if (presets == null)
-            return -1;
-
-        for (int i = 0; i < presets.Count; i++)
-            if (BossVoteSystem.IsVotable(presets[i]))
-                return i;
-        return -1;
+        StartIntermission(presentResults);
     }
 
     private void SetPhase(RoundPhase newPhase, int durationTicks)
@@ -534,6 +557,7 @@ internal sealed class RoundManager : ModSystem
         remainingTicks = 0;
         timerPaused = false;
         idleHeld = false;
+        showingResults = false;
         selectedPresetIndex = -1;
         currentLayout = null;
         pendingWinningTeam = Team.None;
@@ -550,6 +574,7 @@ internal sealed class RoundManager : ModSystem
         remainingTicks = 0;
         timerPaused = false;
         idleHeld = false;
+        showingResults = false;
         selectedPresetIndex = -1;
         currentLayout = null;
     }
@@ -560,6 +585,7 @@ internal sealed class RoundManager : ModSystem
         writer.Write(remainingTicks);
         writer.Write(timerPaused);
         writer.Write(idleHeld);
+        writer.Write(showingResults);
         writer.Write(selectedPresetIndex);
         writer.Write(currentLayout != null);
         currentLayout?.Write(writer);
@@ -573,6 +599,7 @@ internal sealed class RoundManager : ModSystem
         remainingTicks = Math.Max(0, reader.ReadInt32());
         timerPaused = reader.ReadBoolean();
         idleHeld = reader.ReadBoolean();
+        showingResults = reader.ReadBoolean();
         selectedPresetIndex = reader.ReadInt32();
         currentLayout = reader.ReadBoolean() ? ArenaLayout.Read(reader) : null;
         AnnouncePhaseChange(oldPhase, currentPhase, wasIdleHeld, idleHeld, SelectedBossType);

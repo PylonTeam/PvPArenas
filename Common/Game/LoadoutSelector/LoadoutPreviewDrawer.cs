@@ -1107,8 +1107,8 @@ internal static class LoadoutPreviewDrawer
                     };
         }
 
-        cachedMaxHealth = loadout.MaxHealth;
-        cachedMaxMana = loadout.MaxMana;
+        cachedMaxHealth = preset.MaxHealth;
+        cachedMaxMana = preset.MaxMana;
 
         previewPlayer =
             BuildPreviewPlayer(loadout);

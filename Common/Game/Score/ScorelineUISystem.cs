@@ -44,8 +44,6 @@ internal sealed class ScorelineUISystem : ModSystem
             return true;
 
         RoundManager manager = ModContent.GetInstance<RoundManager>();
-        if (manager.CurrentPhase == RoundManager.RoundPhase.VotingOrEndScreen)
-            BossVoteDrawer.Draw(110);
         if (manager.CurrentPhase == RoundManager.RoundPhase.FreezeCountdown)
             DrawCenterCountdown(manager);
 
@@ -132,6 +130,8 @@ internal sealed class ScorelineUISystem : ModSystem
         return manager.CurrentPhase switch
         {
             RoundManager.RoundPhase.WaitingForPlayers => manager.IsIdleHeld ? "Waiting" : "Waiting for players",
+            RoundManager.RoundPhase.VotingOrEndScreen when manager.IsShowingResults => $"Results {FormatTime(manager.RemainingTicks)}",
+            RoundManager.RoundPhase.VotingOrEndScreen when manager.IsVoting => $"Boss vote {FormatTime(manager.RemainingTicks)}",
             RoundManager.RoundPhase.VotingOrEndScreen => $"Next round {FormatTime(manager.RemainingTicks)}",
             RoundManager.RoundPhase.Generating => "Preparing",
             RoundManager.RoundPhase.FreezeCountdown => $"Starting {Math.Max(1,

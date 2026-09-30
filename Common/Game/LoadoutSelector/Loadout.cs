@@ -10,12 +10,6 @@ namespace PvPArenas.Common.Game.LoadoutSelector;
 
 public class Loadout
 {
-    [DefaultValue(500), Range(1, 500)]
-    public int MaxHealth { get; set; } = 500;
-
-    [DefaultValue(200), Range(0, 200)]
-    public int MaxMana { get; set; } = 200;
-
     [CustomModConfigItem(typeof(LoadoutArmorElement))]
     public LoadoutArmor Armor { get; set; } = new();
 
