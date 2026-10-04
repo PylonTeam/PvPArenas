@@ -22,7 +22,7 @@ internal static class BossVoteDrawer
     internal static Rectangle ActivePanel()
     {
         int width = Math.Min(452, Main.screenWidth - 12);
-        int top = Math.Max(6, Math.Min(172, Main.screenHeight - 277 - 6));
+        int top = Math.Max(6, Math.Min(80, Main.screenHeight - 277 - 6));
         return new Rectangle((Main.screenWidth - width) / 2, top, width, Math.Min(277, Main.screenHeight - top - 4));
     }
 
