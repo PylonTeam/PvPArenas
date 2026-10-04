@@ -46,6 +46,14 @@ internal sealed class ArenaMapSystem : ModSystem
             return;
 
         RoundManager manager = ModContent.GetInstance<RoundManager>();
+        if (!manager.IsActive)
+        {
+            revealStarted = false;
+            hiddenApplied = false;
+            redrawSections.Clear();
+            redrawPassesRemaining = 0;
+            return;
+        }
         bool activeRound = manager.CurrentPhase is RoundManager.RoundPhase.FreezeCountdown
             or RoundManager.RoundPhase.Playing;
 
@@ -171,14 +179,14 @@ internal sealed class ArenaMapSystem : ModSystem
     private void FilterMapUpdate(On_WorldMap.orig_Update orig, WorldMap map,
         int x, int y, byte light)
     {
-        if (allowMapUpdates && revealBounds.Contains(x, y))
+        if (!ModContent.GetInstance<RoundManager>().IsActive || allowMapUpdates && revealBounds.Contains(x, y))
             orig(map, x, y, light);
     }
 
     private bool FilterMapLightingUpdate(On_WorldMap.orig_UpdateLighting orig, WorldMap map,
         int x, int y, byte light)
     {
-        return allowMapUpdates && revealBounds.Contains(x, y)
+        return (!ModContent.GetInstance<RoundManager>().IsActive || allowMapUpdates && revealBounds.Contains(x, y))
             && orig(map, x, y, light);
     }
 

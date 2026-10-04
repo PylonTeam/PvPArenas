@@ -1,4 +1,6 @@
 using PvPArenas.Common.Game;
+using PvPFramework.Common.Game;
+using System.Linq;
 using System;
 using System.IO;
 using Terraria.ID;
@@ -48,7 +50,9 @@ internal sealed class ArenaWorldSystem : ModSystem
 
     private void LoadArenaWorld(On_WorldFile.orig_LoadWorld orig, bool loadFromCloud)
     {
-        if (Main.netMode != NetmodeID.Server)
+        // Only the default Arenas event may replace the chosen world at startup.
+        // Other installed modes must retain the server's selected world.
+        if (Main.netMode != NetmodeID.Server || GameSession.Instance.Events.FirstOrDefault()?.Id != "arenas")
         {
             orig(loadFromCloud);
             return;

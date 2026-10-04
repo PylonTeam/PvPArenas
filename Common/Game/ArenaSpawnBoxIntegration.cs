@@ -23,14 +23,24 @@ internal sealed class ArenaSpawnBoxIntegration : ModSystem
         }
     }
 
-    public override void PostSetupContent() => RegisterLobby();
+    public override void PostSetupContent()
+    {
+        // Clients need the owner definition to understand ErkySSC snapshots.
+        if (Main.netMode == NetmodeID.MultiplayerClient)
+            RegisterLobby();
+    }
 
     public override void ClearWorld()
     {
         lastWorldSpawn = null;
         // A later multiplayer join must recognize server regions even after leaving mid-round.
-        if (!registered)
-            RegisterLobby();
+        if (Main.netMode == NetmodeID.MultiplayerClient)
+        {
+            if (!registered)
+                RegisterLobby();
+        }
+        else
+            HideLobby();
     }
 
     public override void PreUpdateEntities()
@@ -63,6 +73,13 @@ internal sealed class ArenaSpawnBoxIntegration : ModSystem
     internal static void UpdateMatchState() =>
         ModContent.GetInstance<ArenaSpawnBoxIntegration>().RefreshRegistration();
 
+    internal static void HideLobby()
+    {
+        ArenaSpawnBoxIntegration integration = ModContent.GetInstance<ArenaSpawnBoxIntegration>();
+        RegionSystem.Instance.UnregisterManaged(RegionKey);
+        integration.registered = false;
+    }
+
     private void RefreshRegistration()
     {
         // Clients retain the owner registration and use ErkySSC's authoritative snapshots.
@@ -71,7 +88,8 @@ internal sealed class ArenaSpawnBoxIntegration : ModSystem
 
         // Region tile protection must not veto the server's generated objects or framing.
         // Generating already freezes players and makes them immune through ArenaPlayer.
-        bool lobbyActive = ModContent.GetInstance<RoundManager>().CurrentPhase
+        RoundManager manager = ModContent.GetInstance<RoundManager>();
+        bool lobbyActive = manager.IsActive && manager.CurrentPhase
             is RoundManager.RoundPhase.WaitingForPlayers or RoundManager.RoundPhase.VotingOrEndScreen;
         if (registered == lobbyActive)
             return;

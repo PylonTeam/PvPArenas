@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using PvPArenas.Common.AdminTools.UI;
@@ -28,11 +28,8 @@ internal sealed class ArenaGameManagerErkySSCTool : ModSystem
         if (!TryGetErkySSC(out Mod mod))
             return;
 
-        // Arena Game Manager
-        Add(mod, GameOwner, "arena_game_manager", "Arenas: Game Manager",
-            "Start and end rounds and voting", VanillaAdminIcons.PlayPause.Asset, 31,
-            () => ModContent.GetInstance<ArenaGameManagerUISystem>().Toggle(),
-            () => ModContent.GetInstance<ArenaGameManagerUISystem>().IsActive);
+        // Framework registers the shared game manager. Remove any old mode-owned entry.
+        Clear(mod, GameOwner);
 
         Add(mod, WorldGenOwner, "world_gen_manager", "Arenas: World Gen Manager",
             "Select world generation passes and run them", VanillaAdminIcons.MixedSeed.Asset, 32,

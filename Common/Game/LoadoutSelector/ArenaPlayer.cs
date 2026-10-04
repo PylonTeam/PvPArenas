@@ -47,6 +47,8 @@ internal sealed class ArenaPlayer : ModPlayer
     {
         roundPrepared = false;
         arenaSpawnActive = false;
+        if (!ModContent.GetInstance<RoundManager>().IsActive)
+            return;
         RoundManager.RoundPhase phase = ModContent.GetInstance<RoundManager>().CurrentPhase;
         if (phase is RoundManager.RoundPhase.WaitingForPlayers
             or RoundManager.RoundPhase.VotingOrEndScreen)
@@ -93,6 +95,13 @@ internal sealed class ArenaPlayer : ModPlayer
     public override void PostUpdate()
     {
         RoundManager manager = ModContent.GetInstance<RoundManager>();
+        if (!manager.IsActive)
+        {
+            // Release only transient Arenas spawn state when a client changes events.
+            roundPrepared = generationStaged = false;
+            ResetArenaSpawn();
+            return;
+        }
 
         if (manager.CurrentPhase != RoundManager.RoundPhase.Generating)
             generationStaged = false;

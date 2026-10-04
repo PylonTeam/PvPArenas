@@ -5,6 +5,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Terraria;
 using Terraria.ID;
+using Terraria.Map;
 using Terraria.GameContent.Creative;
 using Terraria.ModLoader;
 using Terraria.ModLoader.Config;
@@ -33,6 +34,8 @@ internal static class ArenaVotingTests
         Main.netMode = NetmodeID.Server;
         Main.dedServ = true;
         Main.myPlayer = 0;
+        Main.maxTilesX = 850;
+        Main.maxTilesY = 600;
         for (int i = 0; i < NetMessage.buffer.Length; i++)
             NetMessage.buffer[i] = new MessageBuffer { whoAmI = i };
         for (int i = 0; i < Netplay.Clients.Length; i++)
@@ -139,6 +142,11 @@ internal static class ArenaVotingTests
         Register(config);
         object round = Activator.CreateInstance(roundType, true)!;
         Register(round);
+        Type sessionType = Type.GetType("PvPFramework.Common.Game.GameSession, PvPFramework", true)!;
+        ModSystem session = (ModSystem)Activator.CreateInstance(sessionType, true)!;
+        Register(session);
+        sessionType.GetProperty("SelectedEvent", All)!.SetValue(session, round);
+        Register(Activator.CreateInstance(Type.GetType("PvPFramework.Common.Pause.PauseManager, PvPFramework", true)!, true)!);
         object framework = Activator.CreateInstance(Type.GetType("PvPFramework.PvPFramework, PvPFramework", true)!, true)!;
         typeof(Mod).GetField("netID", All)!.SetValue(framework, (short)0);
         typeof(ModNet).GetField("netMods", All)!.SetValue(null, new Mod[] { (Mod)framework });
@@ -159,12 +167,12 @@ internal static class ArenaVotingTests
         uint id = (uint)Get(vote, "BallotId");
         Call(vote, "CastVote", 0, id, 1);
         Call(vote, "CastVote", 1, id, 1);
-        Set(round, "remainingTicks", 1800);
-        ((ModSystem)round).PostUpdateEverything();
+        Call(session, "SetStage", round, "voting", "Boss voting", 1800, false, true, true);
+        session.PostUpdateEverything();
         Check("all players voting cannot complete early", (bool)Get(vote, "Active")
             && (int)Get(round, "RemainingTicks") == 1799);
         for (int tick = 0; tick < 1798; tick++)
-            ((ModSystem)round).PostUpdateEverything();
+            session.PostUpdateEverything();
         Check("all players voting still waits for the full timer",
             (bool)Get(vote, "Active") && (int)Get(vote, "Winner") == -1
             && (int)Get(round, "RemainingTicks") == 1 && (uint)Get(vote, "BallotId") == id);
@@ -190,16 +198,17 @@ internal static class ArenaVotingTests
         Main.player[1].active = false;
         vote.PostUpdatePlayers();
         Check("departed players stop counting", (int)Get(vote, "TotalVotes") == 1);
-        Set(round, "timerPaused", true);
-        ((ModSystem)round).PostUpdateEverything();
+        Call(session, "SetClockPaused", round, true);
+        session.PostUpdateEverything();
         Check("pausing at the last tick keeps the vote open",
             (bool)Get(vote, "Active") && (int)Get(round, "RemainingTicks") == 1);
-        Set(round, "timerPaused", false);
-        ((ModSystem)round).PostUpdateEverything();
+        Call(session, "SetClockPaused", round, false);
+        session.PostUpdateEverything();
         int winner = (int)Get(vote, "Winner");
         Check("timer expiry selects the winner and starts its result animation",
             winner == 0 && (int)Get(round, "SelectedPresetIndex") == 0
-            && (int)Get(round, "RemainingTicks") == 114 && !(bool)Get(vote, "Active"));
+            && (int)Get(round, "RemainingTicks") == 114 && !(bool)Get(vote, "Active")
+            && (string)Get(session, "StageId") == "vote_result");
         Call(vote, "CastVote", 0, id, 3);
         Check("winner is stable and completed voting is locked",
             winner == 0 && (int)Call(vote, "Complete") == 0 && !(bool)Get(vote, "Active"));
@@ -228,17 +237,18 @@ internal static class ArenaVotingTests
             support.TileType = TileID.Dirt;
         }
         for (int tick = 0; tick < 113; tick++)
-            ((ModSystem)round).PostUpdateEverything();
+            session.PostUpdateEverything();
         Check("the winner remains visible for the whole result duration",
             (int)Get(round, "RemainingTicks") == 1 && (uint)Get(vote, "BallotId") == id);
-        ((ModSystem)round).PostUpdateEverything();
+        session.PostUpdateEverything();
         string failure = (string)Get(round, "PreparationFailure");
         Check("missing authored template holds the voted boss with a concrete failure",
             failure.Contains("authored arena template is unavailable")
             && (bool)Get(round, "IsIdleHeld") && Get(round, "CurrentPhase").ToString() == "WaitingForPlayers"
-            && (int)Get(round, "SelectedPresetIndex") == winner);
+            && (int)Get(round, "SelectedPresetIndex") == winner
+            && (string)Get(session, "StageId") == "world_required" && (int)Get(session, "RemainingTicks") == -1);
         for (int tick = 0; tick < 1800; tick++)
-            ((ModSystem)round).PostUpdateEverything();
+            session.PostUpdateEverything();
         Check("failed arena setup never silently starts another ballot",
             (uint)Get(vote, "BallotId") == id && !(bool)Get(vote, "Active")
             && (int)Get(vote, "Winner") == winner && (string)Get(round, "PreparationFailure") == failure);
@@ -262,7 +272,7 @@ internal static class ArenaVotingTests
         Call(round, "BeginVoting");
         uint singlePlayerId = (uint)Get(vote, "BallotId");
         Call(vote, "CastVote", 0, singlePlayerId, 1);
-        ((ModSystem)round).PostUpdateEverything();
+        session.PostUpdateEverything();
         Check("a single player still gets the full voting countdown",
             (bool)Get(vote, "Active") && (int)Get(round, "RemainingTicks") == 1799);
         Call(vote, "Start", 300);
@@ -302,6 +312,43 @@ internal static class ArenaVotingTests
             && (bool)Get(presentation, "Interactive") && !(bool)Get(presentation, "Complete"));
         Call(presentation, "Update", 2u, false, -1, 0f);
         Check("cancelled ballots clear presentation", !(bool)Get(presentation, "Visible"));
+
+        sessionType.GetProperty("SelectedEvent", All)!.SetValue(session, null);
+        Main.player[0].team = 0;
+        Main.player[0].inventory[0] = new Item { type = ItemID.Torch, stack = 7 };
+        playerType.GetMethod("PostUpdate", All)!.Invoke(arenaPlayer, null);
+        Type teamBalancer = arenas.GetType("PvPArenas.Common.Game.TeamBalancing.TeamBalancer", true)!;
+        teamBalancer.GetMethod("AssignJoiningPlayer", All)!.Invoke(null, [Main.player[0]]);
+        Check("inactive Arenas preserves another event's inventory and teams",
+            Main.player[0].team == 0 && Main.player[0].inventory[0].stack == 7
+            && Get(round, "CurrentPhase").ToString() == "Inactive");
+
+        sessionType.GetProperty("SelectedEvent", All)!.SetValue(session, round);
+        Main.maxTilesX = 4200;
+        Main.maxTilesY = 1200;
+        Call(round, "OnSelected");
+        playerType.GetMethod("PostUpdate", All)!.Invoke(arenaPlayer, null);
+        teamBalancer.GetMethod("AssignJoiningPlayer", All)!.Invoke(null, [Main.player[0]]);
+        Call(round, "Tick");
+        Check("selected Arenas in another world holds its message without clearing inventory or assigning teams",
+            (string)Get(session, "StageId") == "world_required" && !(bool)Get(session, "IsRunning")
+            && Get(round, "CurrentPhase").ToString() == "Inactive"
+            && Main.player[0].team == 0 && Main.player[0].inventory[0].stack == 7);
+        Check("Arena actions stay disabled in an incompatible world",
+            ((IEnumerable)Get(round, "Actions")).Cast<object>().All(action => !(bool)Get(action, "IsEnabled")));
+        Type mapType = arenas.GetType("PvPArenas.Common.Game.ArenaMapSystem", true)!;
+        object arenaMap = Activator.CreateInstance(mapType, true)!;
+        int mapUpdates = 0;
+        On_WorldMap.orig_Update mapUpdate = (_, _, _, _) => mapUpdates++;
+        On_WorldMap.orig_UpdateLighting lightingUpdate = (_, _, _, _) => true;
+        mapType.GetMethod("FilterMapUpdate", All)!.Invoke(arenaMap, [mapUpdate, null, 10, 20, (byte)200]);
+        bool lightingAllowed = (bool)mapType.GetMethod("FilterMapLightingUpdate", All)!
+            .Invoke(arenaMap, [lightingUpdate, null, 10, 20, (byte)200])!;
+        Check("selected incompatible Arenas leaves vanilla map updates and lighting enabled", mapUpdates == 1 && lightingAllowed);
+        Register(Activator.CreateInstance(arenas.GetType("PvPArenas.Common.Game.BossManager", true)!, true)!);
+        Call(round, "OnDeselected");
+        Check("deselecting incompatible Arenas preserves the other world's inventory and teams",
+            Main.player[0].team == 0 && Main.player[0].inventory[0].stack == 7);
 
         Console.WriteLine($"{checks} arena voting checks passed.");
     }

@@ -6,7 +6,7 @@ using System.Linq;
 using Terraria.GameContent;
 using Terraria.Enums;
 using Terraria.UI;
-using Terraria.Localization;
+using PvPFramework.Common.Game;
 using PvPArenas.Common.Game.BossVoting;
 
 namespace PvPArenas.Common.Game.Score;
@@ -14,19 +14,13 @@ namespace PvPArenas.Common.Game.Score;
 [Autoload(Side = ModSide.Client)]
 internal sealed class ScorelineUISystem : ModSystem
 {
-    private const float StatusScale = 1.05f;
     private const float DamageScale = .95f;
-    private const int StatusHeight = 40;
-    private const int StatusSidePadding = 16;
     private const int ChooseTeamSidePadding = 56;
     private const int TeamHeight = 32;
     private const int PanelGap = 0;
     private const int HeadSize = 28;
     private const int HeadPadding = 14;
     private const int MaxTeamWidth = 260;
-    private const int TimerPanelWidth = 110;
-    private const int NextRoundPanelWidth = 170;
-    private const int StartingPanelWidth = 112;
     private const int DamagePanelWidth = 64;
 
     private static float opacity = 1f;
@@ -45,22 +39,10 @@ internal sealed class ScorelineUISystem : ModSystem
             return true;
 
         RoundManager manager = ModContent.GetInstance<RoundManager>();
-        if (manager.CurrentPhase == RoundManager.RoundPhase.FreezeCountdown)
-            DrawCenterCountdown(manager);
-
-        string status = Status(manager);
+        if (!manager.IsActive)
+            return true;
         bool playing = manager.CurrentPhase == RoundManager.RoundPhase.Playing;
-        bool chooseTeam = manager.CurrentPhase == RoundManager.RoundPhase.VotingOrEndScreen
-            && (Team)Main.LocalPlayer.team is not (Team.Red or Team.Blue);
-        int sidePadding = chooseTeam ? ChooseTeamSidePadding : StatusSidePadding;
-        int statusWidth = manager.CurrentPhase switch
-        {
-            RoundManager.RoundPhase.Playing => TimerPanelWidth,
-            RoundManager.RoundPhase.FreezeCountdown => StartingPanelWidth,
-            RoundManager.RoundPhase.VotingOrEndScreen when !chooseTeam => NextRoundPanelWidth,
-            _ => Math.Max(StatusHeight, (int)Math.Ceiling(MeasureText(status, StatusScale).X) + sidePadding * 2)
-        };
-        Rectangle panel = new(Main.screenWidth / 2 - statusWidth / 2, 0, statusWidth, StatusHeight);
+        Rectangle panel = GameTimerUISystem.PanelBounds;
 
         Player[] redPlayers = TeamPlayers(Team.Red);
         Player[] bluePlayers = TeamPlayers(Team.Blue);
@@ -85,27 +67,8 @@ internal sealed class ScorelineUISystem : ModSystem
         if (nonePlayers.Length > 0)
             hoverBounds = Rectangle.Union(hoverBounds, nonePanel);
 
-        bool hovered = hoverBounds.Contains(Main.MouseScreen.ToPoint());
+        bool hovered = hoverBounds.Contains(GameTimerUISystem.MousePoint);
         opacity = MathHelper.Lerp(opacity, hovered ? .3f : 1f, 1f / 12f);
-        Utils.DrawInvBG(Main.spriteBatch, panel, Color.White * .9f * opacity);
-
-        if (manager.CurrentPhase is RoundManager.RoundPhase.FreezeCountdown or RoundManager.RoundPhase.Playing)
-        {
-            const int iconSize = 38;
-            Rectangle icon = new(panel.Center.X - iconSize / 2, panel.Center.Y - iconSize / 2,
-                iconSize, iconSize);
-            BossVoteDrawer.DrawBossHead(manager.SelectedBossType, icon, .5f * opacity);
-        }
-
-        if (chooseTeam)
-        {
-            Texture2D pvpIcons = TextureAssets.Pvp[1].Value;
-            DrawTeamIcon(pvpIcons, Team.Red, new Vector2(panel.X + ChooseTeamSidePadding / 2f, panel.Center.Y));
-            DrawTeamIcon(pvpIcons, Team.Blue, new Vector2(panel.Right - ChooseTeamSidePadding / 2f, panel.Center.Y));
-        }
-
-        DrawCenteredText(status, panel, Color.White * opacity, StatusScale);
-
         if (redPlayers.Length > 0)
             DrawTeamPanel(redPanel, Team.Red, redPlayers, redDamageText, redDamage, playing);
         if (bluePlayers.Length > 0)
@@ -113,46 +76,25 @@ internal sealed class ScorelineUISystem : ModSystem
         if (nonePlayers.Length > 0)
             DrawNoTeamPanel(nonePanel, nonePlayers);
 
-        if (panel.Contains(Main.MouseScreen.ToPoint()))
-        {
-            Main.LocalPlayer.mouseInterface = true;
-            Main.instance.MouseText(string.IsNullOrEmpty(manager.PreparationFailure)
-                ? "Arenas round status"
-                : Language.GetTextValue("Mods.PvPArenas.Round.PreparationFailed", manager.PreparationFailure));
-        }
-
         return true;
     }
 
-    private static string Status(RoundManager manager)
+    internal static void DrawTimerDecoration(RoundManager manager, Rectangle panel, float alpha)
     {
+        if (manager.CurrentPhase is RoundManager.RoundPhase.FreezeCountdown or RoundManager.RoundPhase.Playing)
+        {
+            const int iconSize = 38;
+            Rectangle icon = new(panel.Center.X - iconSize / 2, panel.Center.Y - iconSize / 2, iconSize, iconSize);
+            BossVoteDrawer.DrawBossHead(manager.SelectedBossType, icon, .5f * alpha);
+        }
         if (manager.CurrentPhase == RoundManager.RoundPhase.VotingOrEndScreen
             && (Team)Main.LocalPlayer.team is not (Team.Red or Team.Blue))
-            return "Choose your team";
-
-        return manager.CurrentPhase switch
         {
-            RoundManager.RoundPhase.WaitingForPlayers when !string.IsNullOrEmpty(manager.PreparationFailure)
-                => Language.GetTextValue("Mods.PvPArenas.Round.PreparationFailedStatus"),
-            RoundManager.RoundPhase.WaitingForPlayers => manager.IsIdleHeld ? "Waiting" : "Waiting for players",
-            RoundManager.RoundPhase.VotingOrEndScreen when manager.IsShowingResults => $"Results {FormatTime(manager.RemainingTicks)}",
-            RoundManager.RoundPhase.VotingOrEndScreen when manager.IsVoting => $"Boss vote {FormatTime(manager.RemainingTicks)}",
-            RoundManager.RoundPhase.VotingOrEndScreen => $"Next round {FormatTime(manager.RemainingTicks)}",
-            RoundManager.RoundPhase.Generating => manager.SelectedBossType == Terraria.ID.NPCID.Plantera
-                ? "Generating jungle" : "Preparing arena",
-            RoundManager.RoundPhase.FreezeCountdown => $"Starting {Math.Max(1,
-                (int)Math.Ceiling(manager.RemainingTicks / 60f))}",
-            RoundManager.RoundPhase.Playing => FormatTime(manager.RemainingTicks),
-            _ => "Arenas"
-        };
+            Texture2D icons = TextureAssets.Pvp[1].Value;
+            DrawTeamIcon(icons, Team.Red, new Vector2(panel.X + ChooseTeamSidePadding / 2f, panel.Center.Y), alpha);
+            DrawTeamIcon(icons, Team.Blue, new Vector2(panel.Right - ChooseTeamSidePadding / 2f, panel.Center.Y), alpha);
+        }
     }
-
-    private static string FormatTime(int ticks)
-    {
-        int seconds = Math.Max(0, (int)Math.Ceiling(ticks / 60f));
-        return $"{seconds / 60}:{seconds % 60:00}";
-    }
-
     private static Player[] TeamPlayers(Team team) => Main.player
         .Where(player => player?.active == true && (Team)player.team == team)
         .ToArray();
@@ -177,7 +119,7 @@ internal sealed class ScorelineUISystem : ModSystem
         if (playing)
         {
             DrawCenteredText(damageText, panel, Color.White * opacity, DamageScale, panel.Width - 16);
-            if (panel.Contains(Main.MouseScreen.ToPoint()))
+            if (panel.Contains(GameTimerUISystem.MousePoint))
             {
                 Main.LocalPlayer.mouseInterface = true;
                 Main.instance.MouseText($"{team} team boss damage: {damage}");
@@ -188,11 +130,11 @@ internal sealed class ScorelineUISystem : ModSystem
         DrawHeadRow(panel, players, teamColor);
     }
 
-    private static void DrawTeamIcon(Texture2D pvpIcons, Team team, Vector2 center)
+    private static void DrawTeamIcon(Texture2D pvpIcons, Team team, Vector2 center, float alpha)
     {
         Rectangle frame = pvpIcons.Frame(6, 1, (int)team);
         frame.Width -= 2;
-        Main.spriteBatch.Draw(pvpIcons, center, frame, Color.White * .5f * opacity, 0f,
+        Main.spriteBatch.Draw(pvpIcons, center, frame, Color.White * .5f * alpha, 0f,
             frame.Size() / 2f, 1f, Microsoft.Xna.Framework.Graphics.SpriteEffects.None, 0f);
     }
 
@@ -215,7 +157,7 @@ internal sealed class ScorelineUISystem : ModSystem
             Main.MapPlayerRenderer.DrawPlayerHead(Main.Camera, players[i],
                 center - new Vector2(2f, 2f), opacity, .6f * HeadSize / 26f, headColor * opacity);
 
-            if (!hitbox.Contains(Main.MouseScreen.ToPoint()))
+            if (!hitbox.Contains(GameTimerUISystem.MousePoint))
                 continue;
 
             Main.LocalPlayer.mouseInterface = true;
@@ -248,13 +190,6 @@ internal sealed class ScorelineUISystem : ModSystem
         }
 
         return fallback;
-    }
-
-    private static void DrawCenterCountdown(RoundManager manager)
-    {
-        string countdown = Math.Max(1, (int)Math.Ceiling(manager.RemainingTicks / 60f)).ToString();
-        Utils.DrawBorderStringBig(Main.spriteBatch, countdown,
-            new Vector2(Main.screenWidth / 2f, Main.screenHeight / 2f), Color.White, 1f, .5f, .5f);
     }
 
     private static Vector2 MeasureText(string value, float scale) =>

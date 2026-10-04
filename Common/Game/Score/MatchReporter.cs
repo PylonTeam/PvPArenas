@@ -136,7 +136,7 @@ internal static class MatchReporter
         // Permanent local backup before validation/auth — a match is never lost to an API failure.
         try
         {
-            string backupPath = MatchBackupStore.Save(payload, matchToken);
+            string backupPath = MatchSubmission.SaveBackup(payload, matchToken, "PvPArenasMatchesBackupDoNotDelete");
             Log.Info($"[Arenas match] Backed up to {backupPath}.");
         }
         catch (Exception exception)
@@ -163,7 +163,7 @@ internal static class MatchReporter
 
         // Intentionally no automatic retry: Tavernkeep has no idempotency key, so an ambiguous
         // retry could duplicate the match and its gem rewards.
-        _ = PostAsync(payload, presentationKey, recipients);
+        _ = PostAsync(matchToken, payload, presentationKey, recipients);
     }
 
     private static MatchPlayerPayload BuildPlayerPayload(ReportPlayer player)
@@ -234,14 +234,16 @@ internal static class MatchReporter
     }
 
     private static async Task PostAsync(
+        string matchToken,
         MatchPayload payload,
         string presentationKey,
         IReadOnlyList<GemRecipient> recipients)
     {
         try
         {
-            ApiResult<CompletedMatchPayload> result = await MatchApi
-                .PostOfficialMatchAsync(payload)
+            ApiResult<CompletedMatchPayload> result = await MatchSubmission
+                .SubmitAsync(matchToken, payload, replayFilePath: null,
+                    backupDirectoryName: "PvPArenasMatchesBackupDoNotDelete")
                 .ConfigureAwait(false);
 
             if (!result.IsSuccess)

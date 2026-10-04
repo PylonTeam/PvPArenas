@@ -10,7 +10,7 @@ internal static class TeamBalancer
 {
     internal static void AssignJoiningPlayer(Player player)
     {
-        if (Main.netMode == NetmodeID.MultiplayerClient || player?.active != true
+        if (!ModContent.GetInstance<RoundManager>().IsActive || Main.netMode == NetmodeID.MultiplayerClient || player?.active != true
             || IsArenaTeam((Team)player.team))
             return;
 
@@ -21,7 +21,7 @@ internal static class TeamBalancer
 
     internal static void AssignUnassignedPlayers()
     {
-        if (Main.netMode == NetmodeID.MultiplayerClient)
+        if (!ModContent.GetInstance<RoundManager>().IsActive || Main.netMode == NetmodeID.MultiplayerClient)
             return;
 
         int red = Count(Team.Red);
@@ -39,7 +39,7 @@ internal static class TeamBalancer
 
     internal static void AutoBalanceTeams()
     {
-        if (Main.netMode == NetmodeID.MultiplayerClient)
+        if (!ModContent.GetInstance<RoundManager>().IsActive || Main.netMode == NetmodeID.MultiplayerClient)
             return;
 
         Player[] players = ActivePlayers();

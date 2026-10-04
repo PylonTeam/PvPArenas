@@ -16,8 +16,8 @@ internal static class RegionIntegrationTests
     {
         // Exercise the compiled mods with real tModLoader types, without a game or Steam session.
         Main.netMode = NetmodeID.SinglePlayer;
-        Main.maxTilesX = 400;
-        Main.maxTilesY = 300;
+        Main.maxTilesX = 850;
+        Main.maxTilesY = 600;
         Main.spawnTileX = 200;
         Main.spawnTileY = 80;
         RegionSystem regions = new();
@@ -25,6 +25,10 @@ internal static class RegionIntegrationTests
         Type roundType = arenas.GetType("PvPArenas.Common.Game.RoundManager", true)!;
         object round = Activator.CreateInstance(roundType, true)!;
         Register(round);
+        Type sessionType = Type.GetType("PvPFramework.Common.Game.GameSession, PvPFramework", true)!;
+        ModSystem session = (ModSystem)Activator.CreateInstance(sessionType, true)!;
+        Register(session);
+        sessionType.GetProperty("SelectedEvent", All)!.SetValue(session, round);
         FieldInfo phase = roundType.GetField("currentPhase", All)!;
         Type integrationType = arenas.GetType("PvPArenas.Common.Game.ArenaSpawnBoxIntegration", true)!;
         ModSystem integration = (ModSystem)Activator.CreateInstance(integrationType, true)!;
@@ -40,6 +44,7 @@ internal static class RegionIntegrationTests
         RegionSettings manualSettings = RegionSystem.Defaults() with { X = 20, Y = 20, Width = 10, Height = 10 };
         regions.UpdateRegion(manualId, manualSettings);
         integration.PostSetupContent();
+        update.Invoke(null, null);
         regions.PreUpdateEntities();
         integration.PreUpdateEntities();
         ProtectedRegion lobby = regions.FindManaged(Key);
@@ -115,7 +120,28 @@ internal static class RegionIntegrationTests
         clientIntegration.PreUpdateEntities();
         Check("client phase cannot override server lobby snapshots", client.FindManaged(Key).Settings == shifted);
         clientIntegration.Unload();
-        Check("unload removes only Arenas lobby behavior", client.FindManaged(Key) == null && client.Regions.Count == 1);
+        Check("client owner cleanup preserves authoritative region snapshots", client.FindManaged(Key) != null && client.Regions.Count == 2);
+        Main.netMode = NetmodeID.SinglePlayer;
+        client.PreUpdateEntities();
+        Check("server owner cleanup removes only Arenas lobby behavior", client.FindManaged(Key) == null && client.Regions.Count == 1);
+
+        Main.netMode = NetmodeID.SinglePlayer;
+        Register(regions);
+        Register(integration);
+        sessionType.GetProperty("SelectedEvent", All)!.SetValue(session, null);
+        phase.SetValue(round, Enum.Parse(phase.FieldType, "WaitingForPlayers"));
+        update.Invoke(null, null);
+        regions.PreUpdateEntities();
+        Check("inactive Arenas cannot activate a lobby for another event", regions.FindManaged(Key) == null
+            && regions.Find(manualId).Settings == manualSettings);
+
+        sessionType.GetProperty("SelectedEvent", All)!.SetValue(session, round);
+        Main.maxTilesX = 4200;
+        Main.maxTilesY = 1200;
+        update.Invoke(null, null);
+        regions.PreUpdateEntities();
+        Check("selecting Arenas in an incompatible world cannot activate a lobby", regions.FindManaged(Key) == null
+            && regions.Find(manualId).Settings == manualSettings);
 
         Console.WriteLine($"{checks} Arenas/ErkySSC region checks passed.");
     }

@@ -6,6 +6,8 @@ using PvPArenas.Common.Generation;
 using PvPArenas.Common.AdminTools.WorldGenManager;
 using PvPArenas.Core.Configs;
 using PvPFramework.Common.EndScreen;
+using PvPFramework.Common.Game;
+using System.Collections.Generic;
 using System;
 using System.IO;
 using System.Linq;
@@ -20,7 +22,7 @@ using Terraria.Net;
 namespace PvPArenas.Common.Game;
 
 /// <summary>Server-authoritative Arenas round loop.</summary>
-internal sealed class RoundManager : ModSystem
+internal sealed class RoundManager : GameEvent
 {
     private const int TicksPerSecond = 60;
 
@@ -30,7 +32,8 @@ internal sealed class RoundManager : ModSystem
         VotingOrEndScreen,
         Generating,
         FreezeCountdown,
-        Playing
+        Playing,
+        Inactive = byte.MaxValue
     }
 
     internal enum AdminAction : byte
@@ -54,8 +57,6 @@ internal sealed class RoundManager : ModSystem
     }
 
     private RoundPhase currentPhase = RoundPhase.WaitingForPlayers;
-    private int remainingTicks;
-    private bool timerPaused;
     private bool idleHeld;
     private bool showingResults;
     private string preparationFailure = "";
@@ -68,13 +69,95 @@ internal sealed class RoundManager : ModSystem
     private Team pendingWinningTeam;
     private int pendingWinningPlayer = -1;
 
-    internal RoundPhase CurrentPhase => currentPhase;
-    internal int RemainingTicks => remainingTicks;
-    internal bool IsTimerPaused => timerPaused;
+    public override string Id => "arenas";
+    public override string DisplayName => "Arenas";
+    public override int Priority => 50;
+    public override bool UsesStartSettings => false;
+    public override bool UsesDefaultActions => false;
+    public override string StartingRegionKey => ArenaSpawnBoxIntegration.RegionKey;
+    public override bool ManagesStartingRegion => true;
+    private bool ChooseTeam => CurrentPhase == RoundPhase.VotingOrEndScreen
+        && (Team)Main.LocalPlayer.team is not (Team.Red or Team.Blue);
+    public override int TimerSidePadding => ChooseTeam ? 56 : 16;
+    public override string TimerTooltip => string.IsNullOrEmpty(PreparationFailure)
+        ? "Arenas round status" : Language.GetTextValue("Mods.PvPArenas.Round.PreparationFailed", PreparationFailure);
+    public override void DrawTimerDecoration(Rectangle panel, float opacity) => ScorelineUISystem.DrawTimerDecoration(this, panel, opacity);
+    public override string TimerText => !IsActive ? null : ChooseTeam ? "Choose your team" : CurrentPhase switch
+    {
+        RoundPhase.WaitingForPlayers when !string.IsNullOrEmpty(PreparationFailure)
+            => Language.GetTextValue("Mods.PvPArenas.Round.PreparationFailedStatus"),
+        RoundPhase.WaitingForPlayers => IsIdleHeld ? "Waiting" : "Waiting for players",
+        RoundPhase.VotingOrEndScreen when IsShowingResults => $"Results {GameTimerUISystem.FormatTime(RemainingTicks)}",
+        RoundPhase.VotingOrEndScreen when IsVoting => $"Boss vote {GameTimerUISystem.FormatTime(RemainingTicks)}",
+        RoundPhase.VotingOrEndScreen => $"Next round {GameTimerUISystem.FormatTime(RemainingTicks)}",
+        RoundPhase.Generating => SelectedBossType == NPCID.Plantera ? "Generating jungle" : "Preparing arena",
+        RoundPhase.FreezeCountdown => $"Starting {Math.Max(1, (int)Math.Ceiling(RemainingTicks / 60d))}",
+        RoundPhase.Playing => GameTimerUISystem.FormatTime(RemainingTicks),
+        _ => "Arenas"
+    };
+    public override bool CanAdvanceClock => ModContent.GetInstance<WorldGenPassRunner>()?.Busy != true;
+    internal bool IsActive => GameSession.Instance.IsSelected(this) && ArenaWorldSystem.IsCompactWorld;
+    internal RoundPhase CurrentPhase => IsActive ? currentPhase : RoundPhase.Inactive;
+    internal int RemainingTicks => IsActive ? Math.Max(0, GameSession.Instance.RemainingTicks) : 0;
+    internal bool IsTimerPaused => IsActive && GameSession.Instance.ClockPaused;
+
+    public override IReadOnlyList<GameEventAction> Actions => new GameEventAction[]
+    {
+        new("start_round", currentPhase == RoundPhase.Playing ? "End round" : "Start round",
+            () => ExecuteAdminAction(currentPhase == RoundPhase.Playing ? AdminAction.EndRound : AdminAction.StartRound, -1),
+            () => IsActive && currentPhase != RoundPhase.Generating),
+        new("voting", currentPhase == RoundPhase.VotingOrEndScreen ? "End voting" : "Start voting",
+            () => ExecuteAdminAction(currentPhase == RoundPhase.VotingOrEndScreen ? AdminAction.EndVoting : AdminAction.StartVoting, -1),
+            () => IsActive && currentPhase != RoundPhase.Generating),
+        new("waiting", "Set waiting", () => ExecuteAdminAction(AdminAction.SetIdle, -1),
+            () => IsActive && currentPhase != RoundPhase.Generating && !(currentPhase == RoundPhase.WaitingForPlayers && idleHeld)),
+        new("balance_teams", "Auto balance teams", () => ExecuteAdminAction(AdminAction.AutoBalanceTeams, -1),
+            () => IsActive && currentPhase is RoundPhase.WaitingForPlayers or RoundPhase.VotingOrEndScreen)
+    };
+
+    public override void Start(int durationTicks, int countdownSeconds) => ExecuteAdminAction(AdminAction.StartRound, -1);
+    public override void End() => ExecuteAdminAction(
+        currentPhase == RoundPhase.Playing ? AdminAction.EndRound : AdminAction.SetIdle, -1);
+
+    public override void OnSelected()
+    {
+        ResetRoundState();
+        if (!ArenaWorldSystem.IsCompactWorld)
+        {
+            idleHeld = true;
+            preparationFailure = "The authored arena template is unavailable. Arenas requires its arena world; restart with Arenas as the default event.";
+        }
+        SetPhase(RoundPhase.WaitingForPlayers, 0);
+    }
+
+    public override void OnDeselected()
+    {
+        ModContent.GetInstance<ArenaPreparation>()?.Cancel();
+        ModContent.GetInstance<BossManager>().Cleanup();
+        if (IsActive)
+        {
+            ArenaPlayer.ReleaseAll();
+            EndScreenService.Hide();
+            UpdateFreezeTime(false);
+        }
+        ModContent.GetInstance<BossVoteSystem>().Reset();
+        ResetRoundState();
+        ArenaSpawnBoxIntegration.HideLobby();
+    }
+    public override void OnAborted()
+    {
+        OnDeselected();
+        idleHeld = true;
+        preparationFailure = "The event stopped after an unexpected error. Use Start round to retry.";
+        ArenaSpawnBoxIntegration.UpdateMatchState();
+        if (IsActive)
+            UpdateFreezeTime(true);
+    }
+
     internal bool IsIdleHeld => idleHeld;
     internal string PreparationFailure => preparationFailure;
-    internal bool IsShowingResults => currentPhase == RoundPhase.VotingOrEndScreen && showingResults;
-    internal bool IsVoting => currentPhase == RoundPhase.VotingOrEndScreen && !showingResults
+    internal bool IsShowingResults => IsActive && currentPhase == RoundPhase.VotingOrEndScreen && showingResults;
+    internal bool IsVoting => IsActive && currentPhase == RoundPhase.VotingOrEndScreen && !showingResults
         && ModContent.GetInstance<BossVoteSystem>().Active;
     internal int SelectedPresetIndex => selectedPresetIndex;
     internal ArenaLayout CurrentLayout => currentLayout;
@@ -84,17 +167,12 @@ internal sealed class RoundManager : ModSystem
         ? preset.Boss.Type
         : NPCID.None;
 
-    public override void PostUpdateEverything()
+    public override void Tick()
     {
         if (ModContent.GetInstance<WorldGenPassRunner>()?.Busy == true)
             return;
 
-        if (Main.netMode == NetmodeID.MultiplayerClient)
-        {
-            TickClientTimer();
-            return;
-        }
-        if (Main.netMode != NetmodeID.Server)
+        if (!IsActive || Main.netMode != NetmodeID.Server)
             return;
 
         if (!Main.player.Any(player => player?.active == true))
@@ -139,12 +217,11 @@ internal sealed class RoundManager : ModSystem
                 return;
             }
         }
+    }
 
-        if (timerPaused || remainingTicks <= 0)
-            return;
-
-        remainingTicks--;
-        if (remainingTicks > 0)
+    public override void OnClockExpired()
+    {
+        if (!IsActive || Main.netMode != NetmodeID.Server || !CanAdvanceClock)
             return;
 
         switch (currentPhase)
@@ -177,7 +254,7 @@ internal sealed class RoundManager : ModSystem
 
     internal void NotifyBossDefeated(Player player, Team team)
     {
-        if (Main.netMode == NetmodeID.MultiplayerClient || currentPhase != RoundPhase.Playing
+        if (!IsActive || Main.netMode == NetmodeID.MultiplayerClient || currentPhase != RoundPhase.Playing
             || team is not (Team.Red or Team.Blue) || pendingWinningTeam != Team.None)
             return;
 
@@ -188,20 +265,18 @@ internal sealed class RoundManager : ModSystem
 
     internal void SetRemainingSeconds(int seconds)
     {
-        if (Main.netMode == NetmodeID.MultiplayerClient || !IsTimedPhase(currentPhase))
+        if (!IsActive || Main.netMode == NetmodeID.MultiplayerClient || !IsTimedPhase(currentPhase))
             return;
 
-        remainingTicks = SecondsToTicks(seconds);
-        SyncState();
+        GameSession.Instance.SetClock(this, SecondsToTicks(seconds));
     }
 
     internal void ToggleTimerPaused()
     {
-        if (Main.netMode == NetmodeID.MultiplayerClient || !IsTimedPhase(currentPhase))
+        if (!IsActive || Main.netMode == NetmodeID.MultiplayerClient || !IsTimedPhase(currentPhase))
             return;
 
-        timerPaused = !timerPaused;
-        SyncState();
+        GameSession.Instance.SetClockPaused(this, !IsTimerPaused);
     }
 
     internal static void RequestAdminAction(AdminAction action)
@@ -220,7 +295,7 @@ internal sealed class RoundManager : ModSystem
 
     internal void ExecuteAdminAction(AdminAction action, int playerId)
     {
-        if (Main.netMode == NetmodeID.MultiplayerClient
+        if (!IsActive || Main.netMode == NetmodeID.MultiplayerClient
             || ModContent.GetInstance<WorldGenPassRunner>()?.Busy == true)
             return;
 
@@ -330,6 +405,11 @@ internal sealed class RoundManager : ModSystem
 
         preparationFailure = "";
         showingResults = false;
+        if (!ArenaWorldSystem.IsCompactWorld || !ArenaTemplate.Available)
+        {
+            HoldPreparationFailure("The authored arena template is unavailable. Arenas requires its arena world; restart with Arenas as the default event.");
+            return;
+        }
         int votedPreset = ModContent.GetInstance<BossVoteSystem>().Complete();
         if (votedPreset >= 0)
             selectedPresetIndex = votedPreset;
@@ -499,13 +579,16 @@ internal sealed class RoundManager : ModSystem
         RoundPhase oldPhase = currentPhase;
         bool wasIdleHeld = idleHeld;
         currentPhase = newPhase;
-        remainingTicks = Math.Max(0, durationTicks);
-        timerPaused = false;
+        (string id, string label) = Stage(newPhase);
+        bool lobby = newPhase is RoundPhase.WaitingForPlayers or RoundPhase.VotingOrEndScreen;
+        GameSession.Instance.SetStage(this, id, label, IsTimedPhase(newPhase) ? durationTicks : -1,
+            playing: newPhase == RoundPhase.Playing, lobby: lobby, running: newPhase != RoundPhase.WaitingForPlayers);
         ArenaSpawnBoxIntegration.UpdateMatchState();
 
         int players = Main.player.Count(player => player?.active == true);
-        Log.Info($"[M2-Phase] {oldPhase} -> {newPhase}; ticks={remainingTicks}, preset={selectedPresetIndex}, players={players}.");
-        UpdateFreezeTime(newPhase != RoundPhase.Playing);
+        Log.Info($"[M2-Phase] {oldPhase} -> {newPhase}; ticks={RemainingTicks}, preset={selectedPresetIndex}, players={players}.");
+        if (IsActive)
+            UpdateFreezeTime(newPhase != RoundPhase.Playing);
         if (Main.netMode == NetmodeID.SinglePlayer)
             AnnouncePhaseChange(oldPhase, newPhase, wasIdleHeld, idleHeld, SelectedBossType);
         SyncState();
@@ -583,11 +666,20 @@ internal sealed class RoundManager : ModSystem
         _ => $"The {Lang.GetNPCNameValue(bossType)} Arena is awakening..."
     };
 
-    private void TickClientTimer()
+    private (string Id, string Label) Stage(RoundPhase phase) => phase switch
     {
-        if (!timerPaused && IsTimedPhase(currentPhase) && remainingTicks > 0)
-            remainingTicks--;
-    }
+        RoundPhase.WaitingForPlayers when preparationFailure.Contains("authored arena template is unavailable", StringComparison.Ordinal)
+            => ("world_required", "Arena world required"),
+        RoundPhase.WaitingForPlayers when preparationFailure.Length > 0 => ("preparation_failed", "Preparation failed"),
+        RoundPhase.WaitingForPlayers => ("waiting", idleHeld ? "Waiting" : "Waiting for players"),
+        RoundPhase.VotingOrEndScreen when showingResults => ("results", "Results"),
+        RoundPhase.VotingOrEndScreen when ModContent.GetInstance<BossVoteSystem>().Active => ("voting", "Boss voting"),
+        RoundPhase.VotingOrEndScreen => ("vote_result", "Vote result"),
+        RoundPhase.Generating => ("generating", "Preparing arena"),
+        RoundPhase.FreezeCountdown => ("countdown", "Starting round"),
+        RoundPhase.Playing => ("playing", "Round in progress"),
+        _ => ("waiting", "Waiting")
+    };
 
     private static bool IsTimedPhase(RoundPhase phase) =>
         phase is RoundPhase.VotingOrEndScreen or RoundPhase.FreezeCountdown or RoundPhase.Playing;
@@ -615,9 +707,13 @@ internal sealed class RoundManager : ModSystem
 
     public override void OnWorldLoad()
     {
+        if (!IsActive)
+            ResetRoundState();
+    }
+
+    private void ResetRoundState()
+    {
         currentPhase = RoundPhase.WaitingForPlayers;
-        remainingTicks = 0;
-        timerPaused = false;
         idleHeld = false;
         showingResults = false;
         preparationFailure = "";
@@ -625,9 +721,6 @@ internal sealed class RoundManager : ModSystem
         currentLayout = null;
         pendingWinningTeam = Team.None;
         pendingWinningPlayer = -1;
-
-        if (Main.netMode != NetmodeID.MultiplayerClient)
-            UpdateFreezeTime(true);
     }
 
     public override void ClearWorld()
@@ -635,8 +728,6 @@ internal sealed class RoundManager : ModSystem
         ModContent.GetInstance<ArenaPreparation>()?.Cancel();
         ModContent.GetInstance<BossManager>().Cleanup();
         currentPhase = RoundPhase.WaitingForPlayers;
-        remainingTicks = 0;
-        timerPaused = false;
         idleHeld = false;
         showingResults = false;
         preparationFailure = "";
@@ -647,8 +738,9 @@ internal sealed class RoundManager : ModSystem
     public override void NetSend(BinaryWriter writer)
     {
         writer.Write((byte)currentPhase);
-        writer.Write(remainingTicks);
-        writer.Write(timerPaused);
+        // Keep the mode snapshot shape; Framework is authoritative for these clock values.
+        writer.Write(RemainingTicks);
+        writer.Write(IsTimerPaused);
         writer.Write(idleHeld);
         writer.Write(showingResults);
         writer.Write(preparationFailure);
@@ -664,14 +756,15 @@ internal sealed class RoundManager : ModSystem
         RoundPhase oldPhase = currentPhase;
         bool wasIdleHeld = idleHeld;
         currentPhase = (RoundPhase)reader.ReadByte();
-        remainingTicks = Math.Max(0, reader.ReadInt32());
-        timerPaused = reader.ReadBoolean();
+        _ = reader.ReadInt32();
+        _ = reader.ReadBoolean();
         idleHeld = reader.ReadBoolean();
         showingResults = reader.ReadBoolean();
         preparationFailure = reader.ReadString();
         selectedPresetIndex = reader.ReadInt32();
         stagingSpawn = new Point(reader.ReadInt32(), reader.ReadInt32());
         currentLayout = reader.ReadBoolean() ? ArenaLayout.Read(reader) : null;
-        AnnouncePhaseChange(oldPhase, currentPhase, wasIdleHeld, idleHeld, SelectedBossType);
+        if (IsActive)
+            AnnouncePhaseChange(oldPhase, currentPhase, wasIdleHeld, idleHeld, SelectedBossType);
     }
 }
