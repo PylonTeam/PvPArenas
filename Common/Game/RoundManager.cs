@@ -293,6 +293,7 @@ internal sealed class RoundManager : GameEvent
         ModContent.GetInstance<RoundManager>().ExecuteAdminAction(action, Main.myPlayer);
     }
 
+
     internal void ExecuteAdminAction(AdminAction action, int playerId)
     {
         if (!IsActive || Main.netMode == NetmodeID.MultiplayerClient
@@ -467,19 +468,23 @@ internal sealed class RoundManager : GameEvent
         }
 
         currentLayout = layout;
-        foreach (Player player in Main.player)
-            if (player?.active == true && (Team)player.team is Team.Red or Team.Blue)
-                if (!ArenaPlayer.Prepare(player, preset, currentLayout))
-                    return;
-
-        int countdownSeconds = Math.Max(0, ModContent.GetInstance<ServerConfig>().FreezeCountdownSeconds);
-        if (countdownSeconds == 0)
+        Player[] participants = Main.player.Where(ArenaRespawns.IsInitialParticipant).ToArray();
+        if (!ArenaRespawns.TryPlanInitialSpawns(participants, preset, currentLayout,
+                out Dictionary<int, Point> starts, out failure))
         {
-            StartPlaying();
+            HoldPreparationFailure(failure);
             return;
         }
-
+        int countdownSeconds = Math.Max(0, ModContent.GetInstance<ServerConfig>().FreezeCountdownSeconds);
+        // Publish the phase before teleporting: a delayed Generating update must not undo
+        // an acknowledged fight teleport. Resolve every start before moving the first player.
         SetPhase(RoundPhase.FreezeCountdown, SecondsToTicks(countdownSeconds));
+        foreach (Player player in participants)
+            if (!ArenaPlayer.PrepareAtSpawn(player, preset, currentLayout, starts[player.whoAmI]))
+                return;
+
+        if (countdownSeconds == 0)
+            StartPlaying();
     }
 
     internal void ReportSpawnFailure(string failure)

@@ -1,61 +1,29 @@
 namespace PvPArenas.Common.Game.BossVoting;
 
-/// <summary>Local copy of ErkySSC's head snapshot preparation for the arena ballot.</summary>
+/// <summary>A drawing-only snapshot of the player's current head appearance.</summary>
 internal static class BossVotePlayerHead
 {
     internal static Player Create(Player player)
     {
-        Player headPlayer = player.SerializedClone();
-        CopyPlayerDrawAppearance(player, headPlayer);
+        // SerializedClone loses the network ID and its deserializer recolors the
+        // local player. Head-only drawing needs current visuals, not save data.
+        // This shallow copy must never be updated or passed through PlayerFrame.
+        Player headPlayer = (Player)player.Clone();
+        headPlayer.active = true;
         headPlayer.dead = false;
-
-        if (headPlayer.ghost)
-        {
-            headPlayer.ghostFade = 1f;
-            headPlayer.ghostDir = 1;
-        }
-
+        headPlayer.ghost = false;
+        headPlayer.invis = false;
+        headPlayer.immuneAlpha = 0;
+        headPlayer.headPosition = Vector2.Zero;
+        headPlayer.headVelocity = Vector2.Zero;
+        headPlayer.headRotation = 0f;
+        headPlayer.fullRotation = 0f;
+        headPlayer.fullRotationOrigin = Vector2.Zero;
+        headPlayer.gfxOffY = 0f;
+        headPlayer.gravDir = 1f;
         headPlayer.socialIgnoreLight = true;
         headPlayer.isDisplayDollOrInanimate = true;
 
         return headPlayer;
-    }
-
-    private static void CopyPlayerDrawAppearance(Player from, Player to)
-    {
-        to.head = from.head;
-        to.body = from.body;
-        to.legs = from.legs;
-
-        to.cHead = from.cHead;
-        to.cBody = from.cBody;
-        to.cLegs = from.cLegs;
-
-        to.face = from.face;
-        to.neck = from.neck;
-        to.front = from.front;
-        to.back = from.back;
-        to.waist = from.waist;
-        to.shield = from.shield;
-        to.shoe = from.shoe;
-        to.balloon = from.balloon;
-        to.beard = from.beard;
-
-        to.handon = from.handon;
-        to.handoff = from.handoff;
-
-        to.wings = from.wings;
-        to.wingsLogic = from.wingsLogic;
-        to.wingFrame = from.wingFrame;
-        to.wingFrameCounter = from.wingFrameCounter;
-
-        to.carpet = from.carpet;
-        to.carpetFrame = from.carpetFrame;
-
-        to.shieldRaised = from.shieldRaised;
-        to.shieldParryTimeLeft = from.shieldParryTimeLeft;
-
-        to.invis = from.invis;
-        to.headcovered = from.headcovered;
     }
 }

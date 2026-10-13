@@ -172,6 +172,6 @@ internal sealed class ArenaPreparation : ModSystem
         }
     }
 
-    public override void OnWorldLoad() => Cancel();
-    public override void OnWorldUnload() => Cancel();
+    public override void OnWorldLoad() { Cancel(); MirroredJungleGenerator.ResetLayout(); }
+    public override void OnWorldUnload() { Cancel(); MirroredJungleGenerator.ResetLayout(); }
 }

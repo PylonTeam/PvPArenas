@@ -5,6 +5,7 @@ using System.Linq;
 using Terraria.Audio;
 using Terraria.GameContent;
 using Terraria.GameInput;
+using Terraria.Graphics.Renderers;
 using Terraria.ID;
 using Terraria.Localization;
 using static PvPArenas.Common.UI.ArenaUIStyle;
@@ -32,7 +33,8 @@ internal static class BossVoteDrawer
 
     private static string Label(string key) => Language.GetTextValue("Mods.PvPArenas.Voting." + key);
 
-    internal static void Draw(BossVotePresentation presentation, Dictionary<int, Player> heads, float[] hover)
+    internal static void Draw(BossVotePresentation presentation, Dictionary<int, Player> heads, float[] hover,
+        MapHeadRenderer headRenderer)
     {
         BossVoteSystem vote = ModContent.GetInstance<BossVoteSystem>();
         RoundManager manager = ModContent.GetInstance<RoundManager>();
@@ -97,7 +99,7 @@ internal static class BossVoteDrawer
                 }
                 opacity = panelOpacity * (presentation.Complete && !resultChoice ? 1f - transition : 1f);
                 DrawChoice(vote, box, index, mouse, interactive, hover[index] * (1f - transition), resultChoice);
-                DrawVoterHeads(box, vote.VotersFor(index), mouse, heads,
+                DrawVoterHeads(box, vote.VotersFor(index), mouse, heads, headRenderer,
                     closing == 0f && (!presentation.Complete || resultChoice && transition >= 1f),
                     resultChoice ? transition : 0f);
                 opacity = panelOpacity;
@@ -142,7 +144,7 @@ internal static class BossVoteDrawer
     }
 
     private static void DrawVoterHeads(Rectangle box, IReadOnlyList<byte> voters, Point mouse,
-        Dictionary<int, Player> heads, bool tooltips, float centered)
+        Dictionary<int, Player> heads, MapHeadRenderer headRenderer, bool tooltips, float centered)
     {
         const int size = 40;
         int capacity = Math.Max(1, (box.Width - 16) / size);
@@ -155,7 +157,7 @@ internal static class BossVoteDrawer
             int id = voters[i];
             Rectangle tile = new(left + i * size, box.Y + 33, size, size);
             if (heads.TryGetValue(id, out Player player))
-                Main.MapPlayerRenderer.DrawPlayerHead(Main.Camera, player,
+                headRenderer.DrawPlayerHead(Main.Camera, player,
                     tile.Center.ToVector2() - new Vector2(2f), opacity, 1f,
                     Main.teamColor[Math.Clamp(player.team, 0, Main.teamColor.Length - 1)]);
             if (tooltips && tile.Contains(mouse)) Main.instance.MouseText(NameOf(id));

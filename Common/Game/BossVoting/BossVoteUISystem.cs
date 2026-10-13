@@ -4,6 +4,7 @@ using PvPFramework.Common.EndScreen;
 using System;
 using System.Collections.Generic;
 using Terraria.GameInput;
+using Terraria.Graphics.Renderers;
 using Terraria.UI;
 
 namespace PvPArenas.Common.Game.BossVoting;
@@ -13,11 +14,41 @@ internal sealed class BossVoteUISystem : ModSystem
 {
     private readonly BossVotePresentation presentation = new();
     private readonly Dictionary<int, Player> heads = [];
+    private readonly MapHeadRenderer headRenderer = new();
     private readonly float[] hoverAmounts = new float[FightPresets.Count];
     private uint headsBallotId;
+    private volatile bool loaded;
+
+    // Keep snapshot requests separate from live HUD/map heads of the same ID.
+    public override void Load()
+    {
+        loaded = true;
+        MapHeadRenderer renderer = headRenderer;
+        Main.QueueMainThreadAction(() =>
+        {
+            if (loaded && !Main.ContentThatNeedsRenderTargets.Contains(renderer))
+                Main.ContentThatNeedsRenderTargets.Add(renderer);
+        });
+    }
+
+    public override void Unload()
+    {
+        loaded = false;
+        MapHeadRenderer renderer = headRenderer;
+        Main.QueueMainThreadAction(() =>
+        {
+            Main.ContentThatNeedsRenderTargets.Remove(renderer);
+            renderer.Reset();
+        });
+        Reset();
+    }
 
     public override void OnWorldLoad() => Reset();
-    public override void OnWorldUnload() => Reset();
+    public override void OnWorldUnload()
+    {
+        Reset();
+        headRenderer.Reset();
+    }
 
     private void Reset()
     {
@@ -48,9 +79,7 @@ internal sealed class BossVoteUISystem : ModSystem
             heads.Clear();
             Array.Clear(hoverAmounts);
         }
-        for (int id = 0; id < Main.maxPlayers; id++)
-            if (Main.player[id]?.active == true && !heads.ContainsKey(id))
-                heads[id] = BossVotePlayerHead.Create(Main.player[id]);
+        RefreshHeads(vote.Active);
 
         Rectangle panel = BossVoteDrawer.ActivePanel();
         float blend = ArenaUIStyle.HoverBlend(seconds);
@@ -59,6 +88,23 @@ internal sealed class BossVoteUISystem : ModSystem
             bool hover = presentation.Interactive && !PlayerInput.IgnoreMouseInterface
                 && BossVoteDrawer.ChoiceBox(panel, i).Contains(Main.mouseX, Main.mouseY);
             hoverAmounts[i] = MathHelper.Lerp(hoverAmounts[i], hover ? 1f : 0f, blend);
+        }
+    }
+
+    internal void RefreshHeads(bool active)
+    {
+        for (int id = 0; id < Main.maxPlayers; id++)
+        {
+            Player player = Main.player[id];
+            if (player?.active == true)
+            {
+                // Appearance can arrive after activation, or the slot can be reused.
+                // Freeze captured voters when the completed result is displayed.
+                if (active || !heads.ContainsKey(id))
+                    heads[id] = BossVotePlayerHead.Create(player);
+            }
+            else if (active)
+                heads.Remove(id);
         }
     }
 
@@ -72,7 +118,7 @@ internal sealed class BossVoteUISystem : ModSystem
     private bool Draw()
     {
         if (!Main.gameMenu && presentation.Visible && !ModContent.GetInstance<EndScreenSystem>().IsVisible)
-            BossVoteDrawer.Draw(presentation, heads, hoverAmounts);
+            BossVoteDrawer.Draw(presentation, heads, hoverAmounts, headRenderer);
         return true;
     }
 }

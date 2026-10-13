@@ -1,6 +1,8 @@
 using PvPArenas.Common.Game.LoadoutSelector;
+using ErkySSC.Core.Compat;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Terraria.Enums;
 using Terraria.ID;
 
@@ -27,6 +29,204 @@ internal static class ArenaRespawns
             _ => Rectangle.Empty
         };
         return Rectangle.Intersect(layout.ArenaBounds, side);
+    }
+
+    // Unassigned late joins may stage before receiving a team. Dead fighters remain eligible.
+    internal static bool CanStage(Player player) => player?.active == true
+        && !player.ghost && !ReeseCompat.IsGhostSpectator(player.whoAmI);
+
+    internal static bool IsInitialParticipant(Player player) => CanStage(player)
+        && (Team)player.team is Team.Red or Team.Blue;
+
+    /// <summary>Reserve the entire round's starts from live terrain before any player is moved.</summary>
+    internal static bool TryPlanInitialSpawns(IReadOnlyList<Player> players, BossFightPreset preset,
+        ArenaLayout layout, out Dictionary<int, Point> spawns, out string failure)
+    {
+        spawns = [];
+        failure = "";
+        if (Main.netMode != NetmodeID.Server)
+        {
+            failure = "Initial arena spawns must be planned on the server.";
+            return false;
+        }
+        if (players == null || preset == null || layout == null || layout.ArenaBounds.Width <= 0
+            || layout.ArenaBounds.Height <= 0
+            || !new Rectangle(0, 0, Main.maxTilesX, Main.maxTilesY).Contains(layout.ArenaBounds))
+        {
+            failure = "The arena layout or initial player list is unavailable.";
+            return false;
+        }
+
+        Player[] participants = players.Where(IsInitialParticipant).OrderBy(player => player.whoAmI)
+            .GroupBy(player => player.whoAmI).Select(group => group.First()).ToArray();
+        if (participants.Length == 0)
+        {
+            failure = "No active Red or Blue players are available for initial spawns.";
+            return false;
+        }
+
+        OpenTerrain terrain = new(layout.ArenaBounds);
+        foreach (Team team in new[] { Team.Red, Team.Blue })
+        {
+            Player[] teammates = participants.Where(player => (Team)player.team == team).ToArray();
+            if (teammates.Length == 0) continue;
+            Rectangle side = TeamArea(layout, team);
+            bool[] reachable = terrain.ReachableFrom(layout.PlayerSpawn(team));
+            int width = teammates.Max(player => Math.Max(1, player.width));
+            int height = teammates.Max(player => Math.Max(1, player.height));
+            HashSet<Point> authored = preset.ArenaKind == ArenaKind.ArenasV10
+                ? new(team == Team.Red ? RedPoints : BluePoints) : [];
+            List<InitialCandidate> candidates = [];
+            for (int y = side.Top + 3; y < side.Bottom; y++)
+            for (int x = side.Left + 1; x < side.Right - 1; x++)
+            {
+                Point point = new(x, y);
+                // Authored anchors may occupy separate chambers; preserve their existing
+                // teleport semantics. Only natural fallback floors must share the anchor's cave.
+                bool isAuthored = authored.Contains(point);
+                if ((!isAuthored && !reachable[terrain.Index(x, y)]) || !IsValid(point, side)) continue;
+                Rectangle body = InitialBody(point, width, height);
+                if (IsInitialBodySafe(body, y, side))
+                    candidates.Add(new(point, body, terrain.RoomArea(x, y), isAuthored));
+            }
+
+            if (!TryReserveInitial(candidates, teammates.Length, side, out List<InitialCandidate> chosen))
+            {
+                // Farthest-point sampling can leave narrow gaps on crowded ledges. Pack from
+                // their edges first, then spread the requested players over that safe packing.
+                List<InitialCandidate> packed = PackInitialCandidates(candidates);
+                if (packed.Count < teammates.Length
+                    || !TryReserveInitial(packed, teammates.Length, side, out chosen))
+                {
+                    spawns.Clear();
+                    failure = $"Not enough non-overlapping safe {team} starting positions for {teammates.Length} players "
+                        + $"({packed.Count} positions could be reserved).";
+                    return false;
+                }
+            }
+            for (int i = 0; i < teammates.Length; i++)
+                spawns.Add(teammates[i].whoAmI, chosen[i].Point);
+        }
+        return true;
+    }
+
+    private sealed record InitialCandidate(Point Point, Rectangle Body, int Area, bool Authored);
+
+    private static Rectangle InitialBody(Point point, int width, int height) =>
+        new(point.X * 16 + 8 - (width + 1) / 2, point.Y * 16 - height, width + width % 2, height);
+
+    private static bool IsInitialBodySafe(Rectangle body, int floor, Rectangle side)
+    {
+        if (!ArenaSpawnBoxes.TileToWorld(side).Contains(body)) return false;
+        int left = body.Left / 16, right = (body.Right - 1) / 16, top = body.Top / 16;
+        for (int x = left; x <= right; x++)
+        {
+            Tile support = Main.tile[x, floor];
+            bool platform = support.HasUnactuatedTile && TileID.Sets.Platforms[support.TileType]
+                && support.Slope == SlopeType.Solid && !support.IsHalfBlock;
+            if (!WorldGen.SolidTile(x, floor) && !platform) return false;
+            for (int y = top; y < floor; y++)
+            {
+                Tile tile = Main.tile[x, y];
+                if (tile.LiquidAmount > 0 || tile.HasUnactuatedTile
+                    && Main.tileSolid[tile.TileType] && !Main.tileSolidTop[tile.TileType]) return false;
+            }
+        }
+        for (int x = Math.Max(0, left - 1); x <= Math.Min(Main.maxTilesX - 1, right + 1); x++)
+        for (int y = Math.Max(0, top - 1); y <= Math.Min(Main.maxTilesY - 1, floor); y++)
+        {
+            Tile tile = Main.tile[x, y];
+            if (tile.HasUnactuatedTile && (TileID.Sets.TouchDamageImmediate[tile.TileType] > 0
+                || TileID.Sets.TouchDamageHot[tile.TileType] || tile.TileType == TileID.LandMine)) return false;
+        }
+        return true;
+    }
+
+    private static bool TryReserveInitial(List<InitialCandidate> candidates, int count, Rectangle side,
+        out List<InitialCandidate> chosen)
+    {
+        chosen = [];
+        bool[] available = Enumerable.Repeat(true, candidates.Count).ToArray();
+        float[] nearest = new float[candidates.Count];
+        Vector2 center = side.Center.ToVector2();
+        for (int i = 0; i < candidates.Count; i++)
+            nearest[i] = Vector2.DistanceSquared(candidates[i].Point.ToVector2(), center);
+        while (chosen.Count < count)
+        {
+            int best = -1, ties = 0;
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                if (!available[i]) continue;
+                int comparison = best < 0 ? 1 : candidates[i].Authored.CompareTo(candidates[best].Authored);
+                if (comparison == 0) comparison = nearest[i].CompareTo(nearest[best]);
+                if (comparison == 0) comparison = candidates[i].Area.CompareTo(candidates[best].Area);
+                if (comparison < 0) continue;
+                if (comparison == 0 && Main.rand.Next(++ties) != 0) continue;
+                if (comparison > 0) ties = 1;
+                best = i;
+            }
+            if (best < 0) return false;
+            InitialCandidate selected = candidates[best];
+            chosen.Add(selected);
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                if (selected.Body.Intersects(candidates[i].Body)) available[i] = false;
+                float distance = Vector2.DistanceSquared(selected.Point.ToVector2(), candidates[i].Point.ToVector2());
+                nearest[i] = chosen.Count == 1 ? distance : Math.Min(nearest[i], distance);
+            }
+        }
+        return true;
+    }
+
+    private static List<InitialCandidate> PackInitialCandidates(List<InitialCandidate> candidates)
+    {
+        List<InitialCandidate> best = [];
+        // Edge-first interval packing recovers capacity that spread-first choices may strand.
+        // Try both axes and directions because platforms can provide vertically close floors.
+        for (int order = 0; order < 8; order++)
+        {
+            IEnumerable<InitialCandidate> sorted = (order & 1) == 0
+                ? candidates.OrderBy(candidate => (order & 2) == 0 ? candidate.Point.Y : -candidate.Point.Y)
+                    .ThenBy(candidate => (order & 4) == 0 ? candidate.Point.X : -candidate.Point.X)
+                : candidates.OrderBy(candidate => (order & 2) == 0 ? candidate.Point.X : -candidate.Point.X)
+                    .ThenBy(candidate => (order & 4) == 0 ? candidate.Point.Y : -candidate.Point.Y);
+            List<InitialCandidate> packed = [];
+            InitialReservationGrid reservations = new();
+            foreach (InitialCandidate candidate in sorted)
+                if (reservations.CanAdd(candidate.Body))
+                {
+                    packed.Add(candidate);
+                    reservations.Add(candidate.Body);
+                }
+            if (packed.Count > best.Count) best = packed;
+        }
+        return best;
+    }
+
+    private sealed class InitialReservationGrid
+    {
+        private const int CellSize = 64;
+        private readonly Dictionary<Point, List<Rectangle>> cells = [];
+
+        internal bool CanAdd(Rectangle body)
+        {
+            for (int y = body.Top / CellSize; y <= (body.Bottom - 1) / CellSize; y++)
+            for (int x = body.Left / CellSize; x <= (body.Right - 1) / CellSize; x++)
+                if (cells.TryGetValue(new(x, y), out List<Rectangle> occupants)
+                    && occupants.Any(body.Intersects)) return false;
+            return true;
+        }
+
+        internal void Add(Rectangle body)
+        {
+            for (int y = body.Top / CellSize; y <= (body.Bottom - 1) / CellSize; y++)
+            for (int x = body.Left / CellSize; x <= (body.Right - 1) / CellSize; x++)
+            {
+                Point cell = new(x, y);
+                if (!cells.TryGetValue(cell, out List<Rectangle> occupants)) cells[cell] = occupants = [];
+                occupants.Add(body);
+            }
+        }
     }
 
     internal static bool TrySelect(Player player, BossFightPreset preset, ArenaLayout layout, out Point spawn)
@@ -64,7 +264,7 @@ internal static class ArenaRespawns
         return selection.Found;
     }
 
-    private static bool IsValid(Point point, Rectangle side)
+    internal static bool IsValid(Point point, Rectangle side)
     {
         if (point.X < 2 || point.X >= Main.maxTilesX - 2 || point.Y < 4 || point.Y >= Main.maxTilesY
             || !side.Contains(point.X - 1, point.Y - 3) || !side.Contains(point.X + 1, point.Y))

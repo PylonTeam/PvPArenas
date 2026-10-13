@@ -6,6 +6,9 @@
 /bin
 /obj
 
-# Ignore tests and docs folders
-/Tests
+# Tests are local validation only. Do not force-add these directories.
+/Tests/
+/_Deprecated/**/Tests/
+
+# Ignore docs folder
 /Docs

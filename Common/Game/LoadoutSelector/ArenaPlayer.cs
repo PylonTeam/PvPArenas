@@ -92,6 +92,7 @@ internal sealed class ArenaPlayer : ModPlayer
     public override bool CanUseItem(Item item) =>
         ModContent.GetInstance<RoundManager>().CurrentPhase != RoundManager.RoundPhase.Generating;
 
+
     public override void PostUpdate()
     {
         RoundManager manager = ModContent.GetInstance<RoundManager>();
@@ -107,7 +108,7 @@ internal sealed class ArenaPlayer : ModPlayer
             generationStaged = false;
 
         if (manager.CurrentPhase is RoundManager.RoundPhase.WaitingForPlayers
-    or RoundManager.RoundPhase.VotingOrEndScreen)
+            or RoundManager.RoundPhase.VotingOrEndScreen)
         {
             roundPrepared = false;
             SelectedLoadoutIndex = 0;
@@ -135,22 +136,28 @@ internal sealed class ArenaPlayer : ModPlayer
             Player.velocity = Vector2.Zero;
         }
 
-        if (manager.CurrentPhase == RoundManager.RoundPhase.Generating)
+        if (manager.CurrentPhase == RoundManager.RoundPhase.Generating
+            && ArenaRespawns.CanStage(Player))
         {
-            if (!generationStaged && Main.netMode == NetmodeID.Server)
-                Stage(Player, manager.StagingSpawn);
             Player.breath = Player.breathMax;
             Player.noFallDmg = true;
-            Vector2 position = SpawnPosition(Player, manager.StagingSpawn);
-            if (!Player.dead && Player.position != position)
+            // Clients may still see Generating after receiving their fight teleport.
+            // Only the server owns staging placement; clients follow its teleports.
+            if (Main.netMode == NetmodeID.Server)
             {
-                Player.position = position;
-                Player.fallStart = (int)(position.Y / 16f);
+                if (!generationStaged)
+                    Stage(Player, manager.StagingSpawn);
+                Vector2 position = SpawnPosition(Player, manager.StagingSpawn);
+                if (!Player.dead && Player.position != position)
+                {
+                    Player.position = position;
+                    Player.fallStart = (int)(position.Y / 16f);
+                }
             }
         }
 
         if ((manager.CurrentPhase is RoundManager.RoundPhase.FreezeCountdown or RoundManager.RoundPhase.Playing)
-            && ((Team)Player.team is Team.Red or Team.Blue))
+            && ArenaRespawns.IsInitialParticipant(Player))
         {
             if (!roundPrepared
                 && manager.CurrentLayout != null
@@ -178,7 +185,8 @@ internal sealed class ArenaPlayer : ModPlayer
 
     internal static bool Prepare(Player player, BossFightPreset preset, ArenaLayout layout)
     {
-        if (Main.netMode != NetmodeID.Server || player?.active != true || preset == null || layout == null)
+        if (Main.netMode != NetmodeID.Server || !ArenaRespawns.IsInitialParticipant(player)
+            || preset == null || layout == null)
             return false;
 
         if (!ArenaRespawns.TrySelect(player, preset, layout, out Point spawn))
@@ -192,6 +200,23 @@ internal sealed class ArenaPlayer : ModPlayer
         // receives the fight area here before teleporting out of its initially loaded sections.
         if (ModContent.GetInstance<RoundManager>().CurrentPhase != RoundManager.RoundPhase.Generating)
             ArenaTileSync.Send(layout.ArenaBounds, player.whoAmI);
+        return PrepareAtSpawn(player, preset, layout, spawn);
+    }
+
+    // Initial participants already verified the world. Use the reserved position without
+    // selecting again or resending the whole arena after publishing countdown.
+    internal static bool PrepareAtSpawn(Player player, BossFightPreset preset, ArenaLayout layout, Point spawn)
+    {
+        if (Main.netMode != NetmodeID.Server || !ArenaRespawns.IsInitialParticipant(player)
+            || preset == null || layout == null)
+            return false;
+        if (!ArenaRespawns.IsValid(spawn, ArenaRespawns.TeamArea(layout, (Team)player.team)))
+        {
+            ModContent.GetInstance<RoundManager>().ReportSpawnFailure(
+                $"The reserved {(Team)player.team} starting position is no longer safe.");
+            return false;
+        }
+
         ArenaPlayer arenaPlayer = player.GetModPlayer<ArenaPlayer>();
         arenaPlayer.SetArenaSpawn(spawn);
         arenaPlayer.Revive();
@@ -234,7 +259,7 @@ internal sealed class ArenaPlayer : ModPlayer
 
     internal static void Stage(Player player, Point spawn)
     {
-        if (Main.netMode != NetmodeID.Server || player?.active != true)
+        if (Main.netMode != NetmodeID.Server || !ArenaRespawns.CanStage(player))
             return;
         ArenaPlayer arenaPlayer = player.GetModPlayer<ArenaPlayer>();
         arenaPlayer.generationStaged = true;

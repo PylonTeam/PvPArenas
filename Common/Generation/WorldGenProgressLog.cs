@@ -87,7 +87,9 @@ internal sealed class WorldGenProgressLog : IDisposable
     {
         lock (gate)
         {
-            if (finished || !enabled || Main.netMode != NetmodeID.Server) return;
+            // A vanilla pass temporarily scopes netMode to SinglePlayer while running
+            // on the server. Keep its watchdog alive using the job's captured authority.
+            if (finished || !enabled) return;
             try
             {
                 double now = clock(), idle = now - lastAdvance;
