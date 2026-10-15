@@ -3,6 +3,7 @@ using PvPArenas.Common.Game;
 using PvPArenas.Common.Game.BossVoting;
 using PvPArenas.Common.Game.LoadoutSelector;
 using PvPArenas.Core.Compat;
+using PvPArenas.Common.Loadouts;
 using PvPArenas.Common.Generation;
 using System;
 using System.IO;
@@ -20,8 +21,10 @@ public sealed class PvPArenas : Mod
         WorldGenRequest,
         WorldGenStatus,
         LoadoutApplied,
-        LoadoutPositions,
-        ArenaWorldSync
+        LoadoutPreferences,
+        ArenaWorldSync,
+        RequestLoadoutPreferences,
+        AcknowledgeLoadout
     }
 
     public override void HandlePacket(BinaryReader reader, int whoAmI)
@@ -57,17 +60,26 @@ public sealed class PvPArenas : Mod
             case PacketType.SelectLoadout:
                 if (Main.netMode != NetmodeID.Server)
                     return;
-                ArenaPlayer.HandleLoadoutSelect(whoAmI, reader.ReadInt32());
+                int index = reader.ReadInt32(), boss = reader.ReadInt32();
+                ArenaPlayer.HandleLoadoutSelect(whoAmI, index, boss, ArenaLoadoutDelivery.ReadPreferences(reader));
                 break;
 
             case PacketType.LoadoutApplied:
                 if (Main.netMode == NetmodeID.MultiplayerClient)
-                    ArenaPlayer.ReceiveLoadoutApplied(reader);
+                    ArenaLoadoutDelivery.ReceiveGrant(reader);
                 break;
 
-            case PacketType.LoadoutPositions:
+            case PacketType.LoadoutPreferences:
                 if (Main.netMode == NetmodeID.Server)
-                    ArenaPlayer.ReceiveLoadoutPositions(whoAmI, reader);
+                    ArenaLoadoutDelivery.HandlePreferences(whoAmI, reader);
+                break;
+
+            case PacketType.RequestLoadoutPreferences:
+                ArenaLoadoutDelivery.HandleRequest(reader);
+                break;
+
+            case PacketType.AcknowledgeLoadout:
+                ArenaLoadoutDelivery.HandleAcknowledgement(whoAmI, reader);
                 break;
 
             case PacketType.WorldGenRequest:

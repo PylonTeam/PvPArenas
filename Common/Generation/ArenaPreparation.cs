@@ -1,6 +1,7 @@
 using PvPArenas.Common.AdminTools.WorldGenManager;
 using PvPArenas.Common.Game;
 using PvPArenas.Common.Game.LoadoutSelector;
+using PvPArenas.Common.Loadouts;
 using System;
 using System.Collections.Generic;
 using Terraria.Chat;
@@ -69,6 +70,16 @@ internal sealed class ArenaPreparation : ModSystem
         {
             if (syncing)
             {
+                if (recoveryFailure.Length == 0)
+                {
+                    bool ready = true;
+                    foreach (Player player in Main.player)
+                        if (ArenaRespawns.IsInitialParticipant(player))
+                            ready &= ArenaLoadoutDelivery.RequestPreferences(player, preparingPreset);
+                    if (!ready) return false;
+                }
+                // Keep recipient admission open while preferences are pending. World
+                // verification must be the final gate, including players joining that wait.
                 if (!ArenaWorldSync.Advance(out string syncFailure)) return false;
                 if (syncFailure.Length > 0) throw new InvalidOperationException(syncFailure);
                 syncing = false;

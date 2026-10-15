@@ -52,36 +52,6 @@ internal static class LoadoutSlotLayout
     internal static int[] Types(Item[] inventory) => Enumerable.Range(0, SlotCount)
         .Select(i => i < inventory.Length && inventory[i]?.IsAir == false ? inventory[i].type : 0).ToArray();
 
-    // Reorders existing objects only: no item creation, healing, stack reset, or removal.
-    internal static Item[] Reorder(Item[] inventory, Loadout loadout, IReadOnlyList<int> positions)
-    {
-        int[] wanted = Types(Arrange(loadout, positions));
-        Item[] result = new Item[SlotCount];
-        bool[] used = new bool[SlotCount];
-        for (int slot = 0; slot < SlotCount; slot++)
-        {
-            if (wanted[slot] <= 0) continue;
-            for (int i = 0; i < SlotCount; i++)
-                if (!used[i] && inventory[i]?.IsAir == false && inventory[i].type == wanted[slot])
-                {
-                    result[slot] = inventory[i];
-                    used[i] = true;
-                    break;
-                }
-        }
-        for (int i = 0; i < SlotCount; i++)
-        {
-            if (used[i] || inventory[i]?.IsAir != false) continue;
-            int slot = result[i] == null ? i : Enumerable.Range(0, SlotCount)
-                .FirstOrDefault(s => result[s] == null && Allows(s, inventory[i].type), -1);
-            // A pickup-filled inventory may leave no legal packing. Keep it intact.
-            if (slot < 0) return inventory.Take(SlotCount).ToArray();
-            result[slot] = inventory[i];
-        }
-        for (int i = 0; i < SlotCount; i++) result[i] ??= new Item();
-        return result;
-    }
-
     private static bool Allows(int slot, int type) => slot < 50
         || slot < 54 && type is >= ItemID.CopperCoin and <= ItemID.PlatinumCoin
         || slot >= 54 && ContentSamples.ItemsByType.TryGetValue(type, out Item item) && item.ammo > 0;

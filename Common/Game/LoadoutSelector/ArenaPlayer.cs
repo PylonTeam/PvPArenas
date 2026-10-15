@@ -2,9 +2,10 @@ using PvPArenas.Common.Game.TeamBalancing;
 using PvPArenas.Common.Generation;
 using ErkySSC.Common.RegionProtection;
 using PvPFramework.Common.Scoreboard;
+using PvPArenas.Common.Loadouts;
+using ErkySSC.Core.Inventory;
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using Terraria.Enums;
 using Terraria.ID;
@@ -21,8 +22,17 @@ internal sealed class ArenaPlayer : ModPlayer
     private bool suppressArenaSpawn;
 
     internal int SelectedLoadoutIndex;
-    private int loadoutRevision;
-    private bool positionsPending;
+    private ArenaLoadoutDelivery delivery;
+    internal ArenaLoadoutDelivery Delivery => delivery ??= new();
+    internal bool AwaitingLoadoutDelivery => !roundPrepared || Delivery.AwaitingGrant;
+
+    public override void Initialize() => delivery = new();
+
+    internal void MarkLoadoutReceived(int index)
+    {
+        SelectedLoadoutIndex = index;
+        roundPrepared = true;
+    }
 
     private readonly Dictionary<int, uint> bossDamageByItem = [];
 
@@ -47,6 +57,7 @@ internal sealed class ArenaPlayer : ModPlayer
     {
         roundPrepared = false;
         arenaSpawnActive = false;
+        delivery = new();
         if (!ModContent.GetInstance<RoundManager>().IsActive)
             return;
         RoundManager.RoundPhase phase = ModContent.GetInstance<RoundManager>().CurrentPhase;
@@ -92,6 +103,17 @@ internal sealed class ArenaPlayer : ModPlayer
     public override bool CanUseItem(Item item) =>
         ModContent.GetInstance<RoundManager>().CurrentPhase != RoundManager.RoundPhase.Generating;
 
+    public override void PreUpdate()
+    {
+        RoundManager manager = ModContent.GetInstance<RoundManager>();
+        // Vanilla ghosts return before PostUpdate, so release their transient handoff here.
+        if (!manager.IsActive || !ArenaRespawns.IsInitialParticipant(Player)
+            || manager.CurrentPhase is RoundManager.RoundPhase.WaitingForPlayers or RoundManager.RoundPhase.VotingOrEndScreen)
+        {
+            roundPrepared = false;
+            Delivery.Reset();
+        }
+    }
 
     public override void PostUpdate()
     {
@@ -100,6 +122,7 @@ internal sealed class ArenaPlayer : ModPlayer
         {
             // Release only transient Arenas spawn state when a client changes events.
             roundPrepared = generationStaged = false;
+            Delivery.Reset();
             ResetArenaSpawn();
             return;
         }
@@ -112,6 +135,7 @@ internal sealed class ArenaPlayer : ModPlayer
         {
             roundPrepared = false;
             SelectedLoadoutIndex = 0;
+            Delivery.Reset();
 
             ResetArenaSpawn();
 
@@ -139,6 +163,8 @@ internal sealed class ArenaPlayer : ModPlayer
         if (manager.CurrentPhase == RoundManager.RoundPhase.Generating
             && ArenaRespawns.CanStage(Player))
         {
+            if (Main.netMode == NetmodeID.MultiplayerClient)
+                roundPrepared = false;
             Player.breath = Player.breathMax;
             Player.noFallDmg = true;
             // Clients may still see Generating after receiving their fight teleport.
@@ -178,6 +204,15 @@ internal sealed class ArenaPlayer : ModPlayer
                 }
             }
 
+            if (!roundPrepared && (Main.netMode != NetmodeID.MultiplayerClient || Player.whoAmI == Main.myPlayer))
+            {
+                Player.hostile = false;
+                Player.immune = Player.immuneNoBlink = true;
+                Player.immuneTime = Math.Max(Player.immuneTime, 2);
+                Player.noFallDmg = true;
+                Player.breath = Player.breathMax;
+                return;
+            }
             Player.hostile = true;
             KeepInsideArena(manager.CurrentLayout);
         }
@@ -188,6 +223,9 @@ internal sealed class ArenaPlayer : ModPlayer
         if (Main.netMode != NetmodeID.Server || !ArenaRespawns.IsInitialParticipant(player)
             || preset == null || layout == null)
             return false;
+
+        if (!ArenaLoadoutDelivery.RequestPreferences(player, preset))
+            return true; // Pending late join; PostUpdate retries without placing or granting twice.
 
         if (!ArenaRespawns.TrySelect(player, preset, layout, out Point spawn))
         {
@@ -245,6 +283,7 @@ internal sealed class ArenaPlayer : ModPlayer
             ArenaPlayer arenaPlayer = player.GetModPlayer<ArenaPlayer>();
             arenaPlayer.roundPrepared = false;
             arenaPlayer.generationStaged = false;
+            arenaPlayer.Delivery.Reset();
             arenaPlayer.SelectedLoadoutIndex = 0;
             arenaPlayer.ResetArenaSpawn();
             ClearCarriedItems(player, sync: Main.netMode == NetmodeID.Server);
@@ -264,6 +303,7 @@ internal sealed class ArenaPlayer : ModPlayer
         ArenaPlayer arenaPlayer = player.GetModPlayer<ArenaPlayer>();
         arenaPlayer.generationStaged = true;
         arenaPlayer.roundPrepared = false;
+        arenaPlayer.Delivery.Reset();
         arenaPlayer.ResetArenaSpawn();
         player.chest = -1;
         player.sign = -1;
@@ -276,6 +316,9 @@ internal sealed class ArenaPlayer : ModPlayer
         player.RemoveAllGrapplingHooks();
         Teleport(player, spawn);
         NetMessage.SendData(MessageID.TogglePVP, -1, -1, null, player.whoAmI);
+        if (ArenaRespawns.IsInitialParticipant(player)
+            && ModContent.GetInstance<RoundManager>().TryGetSelectedPreset(out BossFightPreset preset))
+            ArenaLoadoutDelivery.RequestPreferences(player, preset);
     }
 
     private static void OnTrySwitchingLoadout(On_Player.orig_TrySwitchingLoadout orig,
@@ -339,107 +382,9 @@ internal sealed class ArenaPlayer : ModPlayer
         finally { suppressArenaSpawn = false; }
     }
 
-    private static bool HasCarriedItems(Player player)
-    {
-        if (HasItems(player.inventory) || HasItems(player.armor) || HasItems(player.dye)
-            || HasItems(player.miscEquips) || HasItems(player.miscDyes) || !player.trashItem.IsAir)
-            return true;
+    private static bool HasCarriedItems(Player player) => PlayerLoadouts.HasItems(player);
 
-        if (player.Loadouts != null)
-            foreach (var loadout in player.Loadouts)
-                if (loadout != null && (HasItems(loadout.Armor) || HasItems(loadout.Dye)))
-                    return true;
-
-        return false;
-    }
-
-    private static bool HasItems(Item[] items)
-    {
-        if (items == null)
-            return false;
-        foreach (Item item in items)
-            if (item?.IsAir == false)
-                return true;
-        return false;
-    }
-
-    private static void ClearCarriedItems(Player player, bool sync)
-    {
-        Clear(player.inventory);
-        Clear(player.armor);
-        Clear(player.dye);
-        Clear(player.miscEquips);
-        Clear(player.miscDyes);
-        player.trashItem.TurnToAir();
-        player.selectedItem = 0;
-        player.itemAnimation = 0;
-        player.itemTime = 0;
-
-        if (player.Loadouts != null)
-            foreach (var loadout in player.Loadouts)
-            {
-                if (loadout == null)
-                    continue;
-                Clear(loadout.Armor);
-                Clear(loadout.Dye);
-            }
-
-        if (sync)
-            SyncEquipment(player);
-    }
-
-    private static void Clear(Item[] items)
-    {
-        if (items == null)
-            return;
-        foreach (Item item in items)
-            item?.TurnToAir();
-    }
-
-    private static void SyncEquipment(Player player)
-    {
-        if (Main.netMode != NetmodeID.Server)
-            return;
-
-        SyncItems(player, player.inventory, PlayerItemSlotID.Inventory0);
-        SyncItems(player, player.armor, PlayerItemSlotID.Armor0);
-        SyncItems(player, player.dye, PlayerItemSlotID.Dye0);
-        SyncItems(player, player.miscEquips, PlayerItemSlotID.Misc0);
-        SyncItems(player, player.miscDyes, PlayerItemSlotID.MiscDye0);
-
-        if (player.Loadouts != null && player.Loadouts.Length >= 3)
-        {
-            if (player.Loadouts[0] != null)
-            {
-                SyncItems(player, player.Loadouts[0].Armor, PlayerItemSlotID.Loadout1_Armor_0);
-                SyncItems(player, player.Loadouts[0].Dye, PlayerItemSlotID.Loadout1_Dye_0);
-            }
-            if (player.Loadouts[1] != null)
-            {
-                SyncItems(player, player.Loadouts[1].Armor, PlayerItemSlotID.Loadout2_Armor_0);
-                SyncItems(player, player.Loadouts[1].Dye, PlayerItemSlotID.Loadout2_Dye_0);
-            }
-            if (player.Loadouts[2] != null)
-            {
-                SyncItems(player, player.Loadouts[2].Armor, PlayerItemSlotID.Loadout3_Armor_0);
-                SyncItems(player, player.Loadouts[2].Dye, PlayerItemSlotID.Loadout3_Dye_0);
-            }
-        }
-    }
-
-    private static void SyncItems(Player player, Item[] items, int firstSlot)
-    {
-        if (items == null)
-            return;
-
-        for (int i = 0; i < items.Length; i++)
-        {
-            NetMessage.SendData(
-                MessageID.SyncEquipment,
-                number: player.whoAmI,
-                number2: firstSlot + i);
-        }
-    }
+    private static void ClearCarriedItems(Player player, bool sync) => PlayerLoadouts.Clear(player, sync);
 
     internal void AddBossDamage(uint damage, int itemType)
     {
@@ -525,7 +470,7 @@ internal sealed class ArenaPlayer : ModPlayer
 
         arenaPlayer.SelectedLoadoutIndex = loadoutIndex;
 
-        // Fixed kits arrive from the server before local slot preferences are applied.
+        // Sandbox kits are local. Fixed kits include preferences in the selection request.
         if (preset.IsSandbox()) ApplyLoadout(player, preset);
 
         if (Main.netMode == NetmodeID.MultiplayerClient)
@@ -535,16 +480,18 @@ internal sealed class ArenaPlayer : ModPlayer
 
             packet.Write((byte)PvPArenas.PacketType.SelectLoadout);
             packet.Write(loadoutIndex);
+            packet.Write(preset.Boss.Type);
+            ArenaLoadoutDelivery.WritePreferences(packet, preset, loadoutIndex);
             packet.Send();
             return;
         }
 
-        HandleLoadoutSelect(Main.myPlayer, loadoutIndex);
+        HandleLoadoutSelect(Main.myPlayer, loadoutIndex, preset.Boss.Type, null);
     }
 
     internal static void HandleLoadoutSelect(
         int playerId,
-        int loadoutIndex)
+        int loadoutIndex, int boss, int[] positions)
     {
         if (Main.netMode == NetmodeID.MultiplayerClient)
             return;
@@ -570,8 +517,9 @@ internal sealed class ArenaPlayer : ModPlayer
             return;
         }
 
-        if (!manager.TryGetSelectedPreset(out BossFightPreset preset) ||
-            !IsValidLoadoutIndex(preset, loadoutIndex))
+        if (!manager.TryGetSelectedPreset(out BossFightPreset preset) || preset.Boss.Type != boss
+            || !ArenaRespawns.IsInitialParticipant(Main.player[playerId])
+            || !IsValidLoadoutIndex(preset, loadoutIndex))
         {
             Log.Chat(
                 $"[LoadoutSelect] Rejected: loadout {loadoutIndex} is invalid.");
@@ -581,8 +529,10 @@ internal sealed class ArenaPlayer : ModPlayer
 
         Player player = Main.player[playerId];
 
-        player.GetModPlayer<ArenaPlayer>()
-            .SelectedLoadoutIndex = loadoutIndex;
+        ArenaPlayer owner = player.GetModPlayer<ArenaPlayer>();
+        if (!owner.roundPrepared) return;
+        if (!preset.IsSandbox()) owner.Delivery.SetPreferences(preset, loadoutIndex, positions);
+        owner.SelectedLoadoutIndex = loadoutIndex;
 
         ApplyLoadout(player, preset);
 
@@ -591,7 +541,7 @@ internal sealed class ArenaPlayer : ModPlayer
             $"'{GetLoadoutName(preset, loadoutIndex)}'.");
     }
 
-    private static bool IsValidLoadoutIndex(
+    internal static bool IsValidLoadoutIndex(
         BossFightPreset preset,
         int index)
     {
@@ -617,38 +567,25 @@ internal sealed class ArenaPlayer : ModPlayer
 
     private static void ApplyLoadout(Player player, BossFightPreset preset)
     {
-        ClearCarriedItems(player, sync: false);
-
-        Loadout loadout = ResolveLoadout(preset, player);
+        Loadout loadout = Main.netMode == NetmodeID.Server && !preset.IsSandbox()
+            ? player.GetModPlayer<ArenaPlayer>().Delivery.Arrange(preset, player.GetModPlayer<ArenaPlayer>().SelectedLoadoutIndex)
+            : ResolveLoadout(preset, player);
         ItemDefinition[] equipped =
         [
-            loadout.Armor?.Head,
-            loadout.Armor?.Body,
-            loadout.Armor?.Legs,
-            loadout.Accessories?.Accessory1,
-            loadout.Accessories?.Accessory2,
-            loadout.Accessories?.Accessory3,
-            loadout.Accessories?.Accessory4,
+            loadout.Armor?.Head, loadout.Armor?.Body, loadout.Armor?.Legs,
+            loadout.Accessories?.Accessory1, loadout.Accessories?.Accessory2,
+            loadout.Accessories?.Accessory3, loadout.Accessories?.Accessory4,
             loadout.Accessories?.Accessory5
         ];
-
-        for (int i = 0; i < equipped.Length && i < player.armor.Length; i++)
-            player.armor[i].SetDefaults(equipped[i]?.Type ?? ItemID.None);
-
-        for (int i = 0; i < (loadout.Inventory?.Count ?? 0) && i < player.inventory.Length; i++)
-        {
-            LoadoutItem entry = loadout.Inventory[i];
-            if (entry == null)
-                continue;
-            player.inventory[i].SetDefaults(entry?.Item?.Type ?? ItemID.None);
-            if (!player.inventory[i].IsAir)
-                player.inventory[i].stack = Math.Max(1, entry.Stack);
-        }
-
-        if (player.miscEquips.Length > 4)
-            player.miscEquips[4].SetDefaults(loadout.Equipment?.GrapplingHook?.Type ?? ItemID.None);
-        if (player.miscEquips.Length > 3)
-            player.miscEquips[3].SetDefaults(loadout.Equipment?.Mount?.Type ?? ItemID.None);
+        List<LoadoutSlot> slots = [];
+        for (int i = 0; i < equipped.Length; i++)
+            slots.Add(new(PlayerItemSlotID.Armor0 + i, equipped[i]?.Type ?? ItemID.None));
+        for (int i = 0; i < (loadout.Inventory?.Count ?? 0) && i < LoadoutSlotLayout.SlotCount; i++)
+            if (loadout.Inventory[i] is LoadoutItem item)
+                slots.Add(new(PlayerItemSlotID.Inventory0 + i, item.Item?.Type ?? ItemID.None, item.Stack));
+        slots.Add(new(PlayerItemSlotID.Misc0 + 4, loadout.Equipment?.GrapplingHook?.Type ?? ItemID.None));
+        slots.Add(new(PlayerItemSlotID.Misc0 + 3, loadout.Equipment?.Mount?.Type ?? ItemID.None));
+        PlayerLoadouts.Apply(new(player, slots, Synchronize: false));
 
         player.dead = false;
         player.ghost = false;
@@ -664,77 +601,14 @@ internal sealed class ArenaPlayer : ModPlayer
         if (Main.netMode != NetmodeID.Server)
             return;
 
-        SyncEquipment(player);
-        NetMessage.SendData(MessageID.PlayerLifeMana, number: player.whoAmI);
-        NetMessage.SendData(MessageID.PlayerMana, number: player.whoAmI);
         if (!preset.IsSandbox())
+            player.GetModPlayer<ArenaPlayer>().Delivery.SendGrant(player, preset);
+        else
         {
-            ArenaPlayer owner = player.GetModPlayer<ArenaPlayer>();
-            owner.loadoutRevision++;
-            owner.positionsPending = true;
-            owner.SendLoadoutApplied(preset, positioned: false);
+            PlayerLoadouts.Synchronize(player);
+            NetMessage.SendData(MessageID.PlayerLifeMana, number: player.whoAmI);
+            NetMessage.SendData(MessageID.PlayerMana, number: player.whoAmI);
         }
-    }
-
-    private void SendLoadoutApplied(BossFightPreset preset, bool positioned)
-    {
-        ModPacket packet = ModContent.GetInstance<PvPArenas>().GetPacket();
-        packet.Write((byte)PvPArenas.PacketType.LoadoutApplied);
-        packet.Write(preset.Boss.Type);
-        packet.Write(SelectedLoadoutIndex);
-        packet.Write(loadoutRevision);
-        packet.Write(positioned);
-        packet.Send(Player.whoAmI);
-    }
-
-    internal static void ReceiveLoadoutApplied(BinaryReader reader)
-    {
-        if (Main.netMode != NetmodeID.MultiplayerClient) return;
-        int boss = reader.ReadInt32(), index = reader.ReadInt32(), revision = reader.ReadInt32();
-        bool positioned = reader.ReadBoolean();
-        RoundManager manager = ModContent.GetInstance<RoundManager>();
-        if (!manager.TryGetSelectedPreset(out BossFightPreset preset) || preset.Boss.Type != boss
-            || preset.IsSandbox() || !IsValidLoadoutIndex(preset, index)) return;
-        ArenaPlayer owner = Main.LocalPlayer.GetModPlayer<ArenaPlayer>();
-        owner.SelectedLoadoutIndex = index;
-        owner.roundPrepared = true;
-        LocalInventoryPositions.Stop();
-        if (positioned)
-        {
-            LocalInventoryPositions.Begin(preset, index);
-            return;
-        }
-        int[] positions = LocalLoadoutPositions.Get(preset, index, ResolveBaseLoadout(preset, index));
-        ModPacket packet = ModContent.GetInstance<PvPArenas>().GetPacket();
-        packet.Write((byte)PvPArenas.PacketType.LoadoutPositions);
-        packet.Write(boss);
-        packet.Write(index);
-        packet.Write(revision);
-        foreach (int type in positions) packet.Write(type);
-        packet.Send();
-    }
-
-    internal static void ReceiveLoadoutPositions(int playerId, BinaryReader reader)
-    {
-        if (Main.netMode != NetmodeID.Server) return;
-        int boss = reader.ReadInt32(), index = reader.ReadInt32(), revision = reader.ReadInt32();
-        int[] positions = new int[LoadoutSlotLayout.SlotCount];
-        for (int i = 0; i < positions.Length; i++) positions[i] = reader.ReadInt32();
-        RoundManager manager = ModContent.GetInstance<RoundManager>();
-        if (playerId < 0 || playerId >= Main.maxPlayers || Main.player[playerId]?.active != true
-            || manager.CurrentPhase is not (RoundManager.RoundPhase.FreezeCountdown or RoundManager.RoundPhase.Playing)
-            || !manager.TryGetSelectedPreset(out BossFightPreset preset) || preset.Boss.Type != boss
-            || preset.IsSandbox() || !IsValidLoadoutIndex(preset, index)) return;
-        Player player = Main.player[playerId];
-        ArenaPlayer owner = player.GetModPlayer<ArenaPlayer>();
-        if (!owner.roundPrepared || (Team)player.team is not (Team.Red or Team.Blue)
-            || !owner.positionsPending || owner.loadoutRevision != revision || owner.SelectedLoadoutIndex != index) return;
-        // Revalidate against the server's kit, and only move objects it already granted.
-        Item[] arranged = LoadoutSlotLayout.Reorder(player.inventory, ResolveBaseLoadout(preset, index), positions);
-        Array.Copy(arranged, player.inventory, arranged.Length);
-        owner.positionsPending = false;
-        SyncItems(player, player.inventory, PlayerItemSlotID.Inventory0);
-        owner.SendLoadoutApplied(preset, positioned: true);
     }
 
     internal static Loadout ResolveLoadout(
