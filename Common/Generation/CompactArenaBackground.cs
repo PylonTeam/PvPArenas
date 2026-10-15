@@ -41,9 +41,9 @@ internal sealed class CompactArenaBackground : ModSystem
 
     private static void DrawUnderworld(On_Main.orig_DrawUnderworldBackground orig, Main main, bool flat)
     {
-        // A surface arena extending below vanilla's fixed underworld cutoff
-        // still needs its sky. The underground Plantera arena keeps vanilla rendering.
-        if (ArenaWorldSystem.IsCompactWorld && Main.worldSurface >= Main.UnderworldLayer) return;
+        // Compact arenas have no underworld. Keep the Jungle's deepest caves
+        // and the authored arena's sky clear of vanilla's hell background.
+        if (JungleDepthSystem.IsJungle || ArenaWorldSystem.IsCompactWorld && Main.worldSurface >= Main.UnderworldLayer) return;
         orig(main, flat);
     }
 }

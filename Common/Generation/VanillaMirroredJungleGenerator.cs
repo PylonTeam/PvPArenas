@@ -10,14 +10,23 @@ namespace PvPArenas.Common.Generation;
 /// <summary>Crops a real vanilla underground Jungle and reflects it into the compact arena.</summary>
 internal static class VanillaMirroredJungleGenerator
 {
-    private const int Surface = 55, Rock = 100, ColumnsPerStep = 16;
+    private const int Surface = 120, Rock = 200, ColumnsPerStep = 16;
     private static ArenaLayout generatedLayout;
+    private static IReadOnlyList<JungleFeaturePlacement> generatedFeatures = Array.Empty<JungleFeaturePlacement>();
+    internal static JungleFeatureStatus LastFeatureStatus { get; private set; }
+    internal static IReadOnlyList<JungleFeaturePlacement> FeaturePlacements => generatedFeatures;
 
     internal static ArenaLayout CreateLayout() => generatedLayout ?? new ArenaLayout(
-        new Rectangle(60, 75, ArenaWorldSystem.Width - 120, 310), new Point(628, 276), new Point(221, 276))
+        ArenaWorldSystem.PlayBounds, new Point(628, 276), new Point(221, 276))
         { BossSpawn = new Point(425, 230) };
 
-    internal static void ResetLayout() => generatedLayout = null;
+    internal static void ResetLayout()
+    {
+        generatedLayout = null;
+        generatedFeatures = Array.Empty<JungleFeaturePlacement>();
+        LastFeatureStatus = null;
+        VanillaJungleLandmarks.ClearExisting();
+    }
 
     internal static IEnumerable<Rectangle> Generate(int seed, Rectangle protectedLobby)
     {
@@ -39,7 +48,10 @@ internal static class VanillaMirroredJungleGenerator
         if (Main.netMode != NetmodeID.Server) yield break;
         if (!ArenaWorldSystem.IsCompactWorld) throw new InvalidOperationException("The Jungle requires the compact arena world.");
         if (!protectedLobby.IsEmpty) throw new InvalidOperationException("Vanilla Jungle generation replaces the complete arena.");
-        generatedLayout = null;
+        string[] needed = ["Hives", "Larva", "Jungle Chests", "Jungle Chests Placement"];
+        if (needed.Any(pass => !profile.Passes.Contains(pass)))
+            throw new InvalidOperationException("The Jungle recipe must include hives, larvae and chest shrines.");
+        ResetLayout();
         ArenaLayout layout = CreateLayout();
         // TeamArea uses Main's dimensions. Capture its compact-world bounds before
         // entering the 4200-wide source scope, then translate them into each crop.
@@ -59,9 +71,21 @@ internal static class VanillaMirroredJungleGenerator
             }
             if (Main.netMode != NetmodeID.Server) yield break;
             trace.Report("Selecting an underground Jungle section", 0);
-            sandbox.Read(() => crop = CaptureCrop(layout.ArenaBounds.Width / 2, layout.ArenaBounds.Height,
-                relativeRedArea, relativePreferredSpawn));
+            sandbox.Read(() =>
+            {
+                try { crop = CaptureCrop(layout.ArenaBounds.Width / 2, layout.ArenaBounds.Height,
+                    relativeRedArea, relativePreferredSpawn, trace); }
+                finally { VanillaJungleLandmarks.ClearExisting(); }
+            });
+            trace.SourceOperation(null);
             source = crop.Source;
+            generatedFeatures = crop.Features.SelectMany(feature =>
+            {
+                Rectangle footprint = feature.Footprint;
+                footprint.Offset(layout.ArenaBounds.Location - source.Location);
+                return new[] { feature with { Footprint = footprint },
+                    feature with { Footprint = new Rectangle(Main.maxTilesX - footprint.Right, footprint.Y, footprint.Width, footprint.Height) } };
+            }).ToArray();
         }
 
         trace.Report("Copying and mirroring vanilla Jungle", 0);
@@ -134,10 +158,14 @@ internal static class VanillaMirroredJungleGenerator
             yield return new Rectangle(start, 0, end - start, Main.maxTilesY);
         }
         Liquid.ReInit();
+        LastFeatureStatus = JungleFeatureStatus.Capture(layout.ArenaBounds, generatedFeatures);
+        LastFeatureStatus.RequireComplete();
+        Log.Debug($"[worldgen] PASS | Jungle features: {LastFeatureStatus.Checks.Count}/{LastFeatureStatus.Checks.Count}");
         JungleMapExport.TryExport(seed, profile.Passes, layout.ArenaBounds, source, "Terraria vanilla C# GenPasses; underground crop mirrored horizontally");
     }
 
-    private static Crop CaptureCrop(int width, int height, Rectangle relativeRedArea, Point relativePreferredSpawn)
+    private static Crop CaptureCrop(int width, int height, Rectangle relativeRedArea, Point relativePreferredSpawn,
+        WorldGenProgressLog trace)
     {
         // Integral counts make the search finite and cheap. The source is entirely below the deepest surface.
         int worldWidth = Main.maxTilesX, worldHeight = Main.maxTilesY;
@@ -168,12 +196,55 @@ internal static class VanillaMirroredJungleGenerator
             double score = Count(jungle, x, y) - Math.Abs(dry - .30) * width * height * .35;
             candidates.Add((new Rectangle(x, y, width, height), score));
         }
-        foreach (var candidate in candidates.OrderByDescending(candidate => candidate.Score).Take(256))
-            if (HasCaveApproach(candidate.Bounds, relativeRedArea, relativePreferredSpawn)) return new Crop(candidate.Bounds);
-        throw new InvalidOperationException("The selected vanilla passes produced no connected underground Jungle section with safe team respawn floors near a mirror seam.");
+        string missing = "complete hive and shrine";
+        VanillaJungleLandmarks.PrepareExisting();
+        int existingCount = 0, connectedCount = 0, templeCount = 0, coreCount = 0;
+        foreach (var candidate in candidates.OrderByDescending(candidate => candidate.Score))
+        {
+            if (!VanillaJungleLandmarks.TryFindExisting(candidate.Bounds, out Rectangle hive, out Rectangle shrine)) continue;
+            existingCount++;
+            if (!HasCaveApproach(candidate.Bounds, relativeRedArea, relativePreferredSpawn)) continue;
+            // Finding a natural tree site is cheap; cap only complete, expensive packing attempts.
+            if (coreCount >= 24) break;
+            connectedCount++;
+            trace.SourceOperation($"Packing Jungle candidate {connectedCount}");
+            Log.Debug($"[worldgen] Packing Jungle candidate {connectedCount}: {candidate.Bounds}");
+            using VanillaJungleTransaction selection = new();
+            List<Rectangle> reserved = [hive, shrine];
+            JungleExtrasArgs args = new(candidate.Bounds, reserved);
+            List<JungleFeaturePlacement> features = [];
+            if (!VanillaJungleLandmarks.TryPopulate(new VanillaJungleLandmarks.Args(candidate.Bounds, reserved, hive, shrine), out var landmarks))
+            { missing = VanillaJungleLandmarks.LastFailure; Log.Debug(missing); continue; }
+            coreCount++;
+            features.AddRange(new[]
+            {
+                new JungleFeaturePlacement("Hive", landmarks.Hive), new("Mahogany", landmarks.Mahogany),
+                new("Shrine", landmarks.Shrine), new("Cabin", landmarks.Cabin)
+            });
+            reserved.AddRange(landmarks.ProtectedBounds);
+            foreach (JungleExtraPlacement placed in VanillaJungleExtras.PlaceTemple(args))
+                features.Add(new(placed.Feature, placed.Footprint));
+            if (!features.Any(feature => feature.Feature == "Temple")) { missing = "complete Temple"; continue; }
+            templeCount++;
+            foreach (JungleExtraPlacement placed in VanillaJungleExtras.PlaceRemaining(args))
+                features.Add(new(placed.Feature, placed.Footprint));
+            Crop captured = new(candidate.Bounds, features);
+            if (!captured.TreesStable) { missing = "stable object frames"; continue; }
+            JungleFeatureStatus status = JungleFeatureStatus.Capture(candidate.Bounds, captured.Features);
+            if (!status.Passed) { missing = status.Failure; Log.Debug("[worldgen] Missing Jungle features: " + missing); continue; }
+            if (!HasCaveApproach(candidate.Bounds, relativeRedArea, relativePreferredSpawn, features.Select(feature => feature.Footprint).ToArray()))
+            { missing = "connected natural team spawns"; continue; }
+            if (!selection.TryCommit(candidate.Bounds, out _)) continue;
+            return captured;
+        }
+        Log.Warn($"[worldgen] Candidates: {candidates.Count}; hives: {VanillaJungleLandmarks.ExistingHiveCount}; "
+            + $"shrines: {VanillaJungleLandmarks.ExistingShrineCount}; eligible: {existingCount}; connected: {connectedCount}; "
+            + $"Temple: {templeCount}; core landmarks: {coreCount}; missing: {missing}");
+        throw new InvalidOperationException("Jungle generation failed. Check the server log.");
     }
 
-    private static bool HasCaveApproach(Rectangle area, Rectangle relativeRedArea, Point relativePreferredSpawn)
+    private static bool HasCaveApproach(Rectangle area, Rectangle relativeRedArea, Point relativePreferredSpawn,
+        IReadOnlyList<Rectangle> protectedAreas = null)
     {
         Rectangle teamArea = relativeRedArea;
         teamArea.Offset(area.Location);
@@ -207,8 +278,11 @@ internal static class VanillaMirroredJungleGenerator
                 }
             }
             if (cave.Count < 500) continue;
-            Point approach = FindApproach(cave, area, area);
-            if (approach != default && TryChooseTeamSpawn(cave, teamArea, preferred, area, approach, area.Right, out _))
+            Point approach = FindApproach(cave, area, area, protectedAreas);
+            // The boss floor adds solid tiles to this cave. Its original connected
+            // component can split even though both anchor positions remain clear.
+            List<Point> reachable = approach == default ? [] : ReachableCave(approach, area, approach);
+            if (reachable.Count >= 500 && TryChooseTeamSpawn(reachable, teamArea, preferred, area, approach, area.Right, out _))
                 return true;
         }
         return false;
@@ -246,8 +320,9 @@ internal static class VanillaMirroredJungleGenerator
                 }
             }
             if (cave.Count < 500 || cave.Count <= largest.Count) continue;
-            Point candidateApproach = FindApproach(cave, left);
-            if (candidateApproach == default || !TryChooseTeamSpawn(cave, teamArea, layout.RedSpawn,
+            Point candidateApproach = FindApproach(cave, left, null, generatedFeatures.Select(feature => feature.Footprint).ToArray());
+            List<Point> reachable = candidateApproach == default ? [] : ReachableCave(candidateApproach, left, candidateApproach);
+            if (reachable.Count < 500 || !TryChooseTeamSpawn(reachable, teamArea, layout.RedSpawn,
                 null, candidateApproach, left.Right, out _)) continue;
             largest = cave;
             approach = candidateApproach;
@@ -269,20 +344,75 @@ internal static class VanillaMirroredJungleGenerator
                 }
             }
         }
+        // Carving can remove support just outside the cleared cells. Validate
+        // that boundary now; no-break framing deliberately skips these objects.
+        int boundaryLeft = Math.Min(approach.X - 1, left.Right - 5);
+        Rectangle boundary = new(boundaryLeft, approach.Y - 7, left.Right - boundaryLeft + 1, 19);
+        boundary.Inflate(2, 2);
+        Rectangle mirroredBoundary = new(Main.maxTilesX - boundary.Right, boundary.Y, boundary.Width, boundary.Height);
+        if (!JungleLegacyObjects.Normalize(boundary) || !JungleLegacyObjects.Normalize(mirroredBoundary))
+            throw new InvalidOperationException("The Jungle cave boundary could not be framed.");
         Point boss = new(left.Right, bossY);
         if (JungleCount(boss) < SceneMetrics.JungleTileThreshold)
             throw new InvalidOperationException("The crop's central cave does not retain the Jungle biome.");
-        // Validate the finished terrain. A join near the edge of the team area must
-        // not remove its original anchor or the alternate floor used when occupied.
-        if (!TryChooseTeamSpawn(largest, teamArea, layout.RedSpawn, null, null, left.Right, out Point red))
-            throw new InvalidOperationException("The completed Jungle cave does not retain two safe team respawn floors.");
+        // Choose anchors from the finished connected component, rather than the
+        // pre-carve cave that the newly filled boss floor may have divided.
+        List<Point> finished = ReachableCave(approach, layout.ArenaBounds);
+        if (!finished.Contains(boss) || !TryChooseTeamSpawn(finished, teamArea, layout.RedSpawn,
+            null, null, left.Right, out Point red))
+            throw new InvalidOperationException("The completed Jungle cave does not retain two safe team respawn floors connected to the boss.");
         return new ArenaLayout(layout.ArenaBounds, new Point(Main.maxTilesX - 1 - red.X, red.Y), red) { BossSpawn = boss };
     }
 
-    private static Point FindApproach(List<Point> cave, Rectangle area, Rectangle? sampleBounds = null) =>
-        cave.Where(p => area.Right - p.X <= 90).OrderByDescending(p => p.X)
+    private static List<Point> ReachableCave(Point origin, Rectangle area, Point? plannedApproach = null)
+    {
+        bool Body(Point point)
+        {
+            if (point.X <= area.Left + 1 || point.X >= area.Right
+                || point.Y <= area.Top + 4 || point.Y >= area.Bottom - 14) return false;
+            for (int dx = -1; dx <= 1; dx++)
+            for (int dy = -3; dy < 0; dy++)
+            {
+                int x = point.X + dx, y = point.Y + dy;
+                if (plannedApproach is Point approach)
+                {
+                    bool bossArea = x >= area.Right - 5 && x < area.Right
+                        && y >= approach.Y - 7 && y < approach.Y + 12;
+                    if (bossArea && y >= approach.Y + 8) return false;
+                    if (bossArea || x >= approach.X - 1 && x <= area.Right
+                        && y >= approach.Y - 5 && y <= approach.Y + 2) continue;
+                }
+                if (Solid(x, y) || Main.tile[x, y].LiquidAmount != 0) return false;
+            }
+            return true;
+        }
+        List<Point> cave = [];
+        if (!Body(origin)) return cave;
+        bool[] visited = new bool[area.Width * area.Height];
+        int Index(Point point) => (point.Y - area.Y) * area.Width + point.X - area.X;
+        Queue<Point> pending = new();
+        pending.Enqueue(origin); visited[Index(origin)] = true;
+        Point[] directions = [new(-1, 0), new(1, 0), new(0, -1), new(0, 1)];
+        while (pending.TryDequeue(out Point point))
+        {
+            cave.Add(point);
+            foreach (Point direction in directions)
+            {
+                Point next = point + direction;
+                if (!area.Contains(next) || visited[Index(next)] || !Body(next)) continue;
+                visited[Index(next)] = true;
+                pending.Enqueue(next);
+            }
+        }
+        return cave;
+    }
+
+    private static Point FindApproach(List<Point> cave, Rectangle area, Rectangle? sampleBounds = null, IReadOnlyList<Rectangle> protectedAreas = null) =>
+        cave.Where(p => area.Right - p.X <= 90
+                && p.Y >= Surface + 8 + (sampleBounds?.Top ?? ArenaWorldSystem.PlayBounds.Top) - ArenaWorldSystem.PlayBounds.Top)
+            .OrderByDescending(p => p.X)
             .ThenBy(p => Math.Abs(p.Y - area.Center.Y))
-            .FirstOrDefault(p => ClearableJoin(p, area.Right, sampleBounds));
+            .FirstOrDefault(p => ClearableJoin(p, area.Right, sampleBounds, protectedAreas));
 
     private static bool TryChooseTeamSpawn(List<Point> cave, Rectangle teamArea, Point preferred,
         Rectangle? jungleBounds, Point? plannedApproach, int seam, out Point spawn)
@@ -290,6 +420,7 @@ internal static class VanillaMirroredJungleGenerator
         spawn = default;
         List<Point> floors = cave.Where(p => ArenaRespawns.IsValid(p, teamArea)
                 && ArenaGeneration.IsSafeSpawn(p.X, p.Y)
+                && p.Y >= Surface + 4 + (jungleBounds?.Top ?? ArenaWorldSystem.PlayBounds.Top) - ArenaWorldSystem.PlayBounds.Top
                 && (!plannedApproach.HasValue || !ClearsSpawnFloor(p, plannedApproach.Value, seam)))
             .OrderBy(p => Math.Abs(p.X - preferred.X) + Math.Abs(p.Y - preferred.Y)).ToList();
         Dictionary<Point, bool> jungle = [];
@@ -322,13 +453,16 @@ internal static class VanillaMirroredJungleGenerator
         foreach (int px in new[] { x, Main.maxTilesX - 1 - x })
         {
             Tile tile = Main.tile[px, y];
-            if (ProtectedObject(tile)) continue;
+            if (ProtectedObject(tile) || generatedFeatures.Any(feature => feature.Footprint.Contains(px, y))) continue;
             tile.ClearTile(); tile.LiquidAmount = 0;
         }
     }
 
-    private static bool ClearableJoin(Point approach, int seam, Rectangle? sampleBounds = null)
+    private static bool ClearableJoin(Point approach, int seam, Rectangle? sampleBounds = null, IReadOnlyList<Rectangle> protectedAreas = null)
     {
+        Rectangle join = new(Math.Min(approach.X - 1, seam - 5), approach.Y - 7,
+            seam - Math.Min(approach.X - 1, seam - 5) + 1, 19);
+        if (protectedAreas?.Any(area => area.Intersects(join)) == true) return false;
         for (int x = Math.Min(approach.X - 1, seam - 5); x <= seam; x++)
         for (int y = approach.Y - 7; y < approach.Y + 12; y++)
             if ((!sampleBounds.HasValue || sampleBounds.Value.Contains(x, y)) && ProtectedObject(Main.tile[x, y])) return false;
@@ -381,47 +515,139 @@ internal static class VanillaMirroredJungleGenerator
     private sealed class Crop
     {
         internal Rectangle Source { get; }
+        internal IReadOnlyList<JungleFeaturePlacement> Features { get; }
+        internal bool TreesStable { get; }
         private readonly Array[] data;
         private readonly List<Rectangle> objects = [];
         private readonly List<Chest> chests = [];
         private static Array[] Arrays() => [Main.tile.GetData<TileTypeData>(), Main.tile.GetData<WallTypeData>(),
             Main.tile.GetData<LiquidData>(), Main.tile.GetData<TileWallBrightnessInvisibilityData>(), Main.tile.GetData<TileWallWireStateData>()];
 
-        internal Crop(Rectangle source)
+        internal Crop(Rectangle source) : this(source, Array.Empty<JungleFeaturePlacement>()) { }
+
+        internal Crop(Rectangle source, IReadOnlyList<JungleFeaturePlacement> features)
         {
             Source = source;
             HashSet<Point> origins = [];
+            RemoveCutTrees(source);
             for (int x = source.Left; x < source.Right; x++)
             for (int y = source.Top; y < source.Bottom; y++)
             {
                 Tile tile = Main.tile[x, y];
                 if (!tile.HasTile || !Main.tileFrameImportant[tile.TileType]) continue;
                 TileObjectData shape = TileObjectData.GetTileData(tile);
+                Rectangle bounds;
                 if (shape == null)
                 {
-                    // Vanilla's one-tile Jungle plants/spores do not register TileObjectData.
-                    if (tile.TileType != TileID.JunglePlants) tile.ClearTile();
-                    continue;
+                    // Trees and older decorative tiles have no registered object data.
+                    // Preserve them; only discard a known multi-tile footprint cut by the crop.
+                    if (!JungleLegacyObjects.TryGetBounds(x, y, tile, out bounds)) continue;
                 }
-                int localX = tile.TileFrameX % shape.CoordinateFullWidth / (shape.CoordinateWidth + shape.CoordinatePadding);
-                int frameY = tile.TileFrameY % shape.CoordinateFullHeight, localY = 0;
-                while (localY < shape.Height - 1 && frameY >= shape.CoordinateHeights[localY] + shape.CoordinatePadding)
-                    frameY -= shape.CoordinateHeights[localY++] + shape.CoordinatePadding;
-                Point origin = new(x - localX, y - localY);
-                Rectangle bounds = new(origin.X, origin.Y, shape.Width, shape.Height);
-                if (!source.Contains(bounds)) { tile.ClearTile(); continue; }
-                if (origins.Add(origin)) objects.Add(new Rectangle(origin.X - source.X, origin.Y - source.Y, shape.Width, shape.Height));
+                else
+                {
+                    int localX = tile.TileFrameX % shape.CoordinateFullWidth / (shape.CoordinateWidth + shape.CoordinatePadding);
+                    int frameY = tile.TileFrameY % shape.CoordinateFullHeight, localY = 0;
+                    while (localY < shape.Height - 1 && frameY >= shape.CoordinateHeights[localY] + shape.CoordinatePadding)
+                        frameY -= shape.CoordinateHeights[localY++] + shape.CoordinatePadding;
+                    bounds = new(x - localX, y - localY, shape.Width, shape.Height);
+                }
+                Point origin = bounds.Location;
+                if (!source.Contains(bounds) || !CompleteObject(x, y, tile, bounds, shape))
+                { tile.ClearTile(); continue; }
+                if (origins.Add(origin)) objects.Add(new Rectangle(origin.X - source.X, origin.Y - source.Y, bounds.Width, bounds.Height));
             }
+            TreesStable = NormalizeTrees(source) && JungleLegacyObjects.Normalize(source);
             foreach (Chest chest in Main.chest)
-                if (chest != null && source.Contains(new Rectangle(chest.x, chest.y, 2, 2)))
+                if (chest != null && source.Contains(new Rectangle(chest.x, chest.y, 2, 2))
+                    && Main.tile[chest.x, chest.y] is Tile chestTile && chestTile.HasTile
+                    && chestTile.TileType is TileID.Containers or TileID.Containers2)
                     chests.Add(new Chest { x = chest.x - source.X, y = chest.y - source.Y, name = chest.name,
                         item = chest.item.Select(item => item?.Clone() ?? new Item()).ToArray() });
+            Features = features.Select(feature => feature.Measure()).ToArray();
             data = Arrays().Select(array => Array.CreateInstance(array.GetType().GetElementType(), source.Width * source.Height)).ToArray();
             Array[] current = Arrays();
             for (int x = 0; x < source.Width; x++)
             for (int component = 0; component < data.Length; component++)
                 Array.Copy(current[component], (source.X + x) * Main.tile.Height + source.Y,
                     data[component], x * source.Height, source.Height);
+        }
+
+        private static bool NormalizeTrees(Rectangle source)
+        {
+            List<Point> trees = [];
+            for (int x = source.Left; x < source.Right; x++)
+            for (int y = source.Top; y < source.Bottom; y++)
+                if (Main.tile[x, y].HasTile && Main.tile[x, y].TileType == TileID.Trees) trees.Add(new(x, y));
+            (bool Active, short X, short Y) State(Point point)
+            {
+                Tile tile = Main.tile[point.X, point.Y];
+                return (tile.HasTile, tile.TileFrameX, tile.TileFrameY);
+            }
+            // TileFrame(noBreak:true) skips trees. Use Terraria's validator before
+            // mirroring so overwritten branches cannot become repaired copies.
+            for (int pass = 0; pass < 8; pass++)
+            {
+                var before = trees.Select(State).ToArray();
+                foreach (Point point in trees)
+                    if (Main.tile[point.X, point.Y].HasTile && Main.tile[point.X, point.Y].TileType == TileID.Trees)
+                        WorldGen.CheckTree(point.X, point.Y);
+                if (before.SequenceEqual(trees.Select(State))) return true;
+            }
+            return false;
+        }
+
+        private static bool CompleteObject(int x, int y, Tile tile, Rectangle bounds, TileObjectData shape)
+        {
+            int step = shape == null ? 18 : shape.CoordinateWidth + shape.CoordinatePadding;
+            int frameX = tile.TileFrameX - (x - bounds.X) * step;
+            int frameY = tile.TileFrameY;
+            for (int row = 0; row < y - bounds.Y; row++)
+                frameY -= shape == null ? 18 : shape.CoordinateHeights[row] + shape.CoordinatePadding;
+            int offset = 0;
+            for (int dy = 0; dy < bounds.Height; dy++)
+            {
+                for (int dx = 0; dx < bounds.Width; dx++)
+                {
+                    Tile part = Main.tile[bounds.X + dx, bounds.Y + dy];
+                    // Each closed-door row independently chooses a cosmetic wood variant.
+                    bool validX = tile.TileType == TileID.ClosedDoor ? part.TileFrameX is 0 or 18 or 36
+                        : part.TileFrameX == frameX + dx * step;
+                    if (!part.HasTile || part.TileType != tile.TileType || !validX || part.TileFrameY != frameY + offset)
+                        return false;
+                }
+                offset += shape == null ? 18 : shape.CoordinateHeights[dy] + shape.CoordinatePadding;
+            }
+            return true;
+        }
+
+        private static void RemoveCutTrees(Rectangle source)
+        {
+            HashSet<Point> visited = [];
+            for (int x = source.Left; x < source.Right; x++)
+            for (int y = source.Top; y < source.Bottom; y++)
+            {
+                Point start = new(x, y);
+                if (!IsTree(start) || !visited.Add(start)) continue;
+                List<Point> tree = [];
+                Queue<Point> queue = new();
+                queue.Enqueue(start);
+                bool complete = true;
+                while (queue.TryDequeue(out Point point))
+                {
+                    tree.Add(point);
+                    complete &= source.Contains(point);
+                    foreach (Point step in new Point[] { new(-1, 0), new(1, 0), new(0, -1), new(0, 1) })
+                    {
+                        Point next = point + step;
+                        if (IsTree(next) && visited.Add(next)) queue.Enqueue(next);
+                    }
+                }
+                if (!complete)
+                    foreach (Point point in tree)
+                        if (source.Contains(point)) Main.tile[point.X, point.Y].ClearTile();
+            }
+            static bool IsTree(Point point) => WorldGen.InWorld(point.X, point.Y, 1)
+                && Main.tile[point.X, point.Y].HasTile && Main.tile[point.X, point.Y].TileType == TileID.Trees;
         }
 
         internal void CopyTo(int x, int y, int targetX, int targetY)
@@ -436,6 +662,13 @@ internal static class VanillaMirroredJungleGenerator
 
         internal void PlaceObjects(Point offset)
         {
+            for (int x = 0; x < Source.Width; x++)
+            for (int y = 0; y < Source.Height; y++)
+            {
+                Tile original = Main.tile[offset.X + x, offset.Y + y];
+                if (original.HasTile && original.TileType == TileID.Trees)
+                    JungleLegacyObjects.ReflectTreeFrame(original, Main.tile[Main.maxTilesX - 1 - offset.X - x, offset.Y + y]);
+            }
             foreach (Rectangle obj in objects)
             {
                 int right = Main.maxTilesX - offset.X - obj.Right;
@@ -447,6 +680,13 @@ internal static class VanillaMirroredJungleGenerator
                     target.TileFrameX = original.TileFrameX;
                     target.TileFrameY = original.TileFrameY;
                 }
+            }
+            for (int x = 0; x < Source.Width; x++)
+            for (int y = 0; y < Source.Height; y++)
+            {
+                Tile original = Main.tile[offset.X + x, offset.Y + y];
+                if (original.HasTile && original.TileType == TileID.Traps)
+                    JungleLegacyObjects.ReflectTrapFrame(original, Main.tile[Main.maxTilesX - 1 - offset.X - x, offset.Y + y]);
             }
             int slot = 0;
             foreach (Chest chest in chests)

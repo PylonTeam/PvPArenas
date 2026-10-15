@@ -44,11 +44,17 @@ internal sealed class WorldGenProgressLog : IDisposable
         Advance($"native:{passId}", $"Native: {passName}", progress);
 
     // Short framing/sync operations keep their parent stage and do not produce a log line per strip.
-    internal void SetOperation(string name)
+    internal void SetOperation(string name) => UpdateOperation(name, sourceScope: false);
+
+    // Source placement temporarily uses SinglePlayer globals inside a server-owned scratch world.
+    internal void SourceOperation(string name) => UpdateOperation(name, sourceScope: true);
+
+    private void UpdateOperation(string name, bool sourceScope)
     {
         lock (gate)
         {
-            if (finished || !enabled || Main.netMode != NetmodeID.Server || operation == name) return;
+            bool authorized = Main.netMode == NetmodeID.Server || sourceScope && Main.netMode == NetmodeID.SinglePlayer;
+            if (finished || !enabled || !authorized || operation == name) return;
             operation = name;
             RecordAdvance(clock());
         }

@@ -21,7 +21,7 @@ namespace PvPArenas.Common.Generation;
 /// </summary>
 internal sealed class VanillaJungleSandbox : IDisposable
 {
-    internal const int SourceWidth = 4200, SourceHeight = 1200;
+    internal const int SourceWidth = 4200, SourceHeight = 1800;
     private const BindingFlags StaticFields = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
     private static int activeScope;
     private readonly int seed, ownerThread;
@@ -89,13 +89,22 @@ internal sealed class VanillaJungleSandbox : IDisposable
                 GenerationProgress progress = new();
                 pass.Apply(progress, GenVars.configuration.GetPassConfiguration(pass.Name));
             }
+            catch (Exception error)
+            {
+                throw new InvalidOperationException("Vanilla pass failed: " + passName + ".", error);
+            }
             finally { if (!enabled) pass.Disable(); }
         });
         trace?.Report("Vanilla: " + passName, 1);
     }
 
     /// <summary>Copy value data inside this callback. Tile handles must never escape it.</summary>
-    internal void Read(Action read) => InScope(read);
+    internal void Read(Action read) => InScope(() =>
+    {
+        // Placement framing must not queue liquid work for a rejected source attempt.
+        WorldGen.noLiquidCheck = true;
+        read();
+    });
 
     private void InScope(Action action)
     {
@@ -165,6 +174,9 @@ internal sealed class VanillaJungleSandbox : IDisposable
         // independent entities keep object placement independent of the ongoing match.
         Main.player = Enumerable.Range(0, Main.player.Length).Select(i => new Player { whoAmI = i }).ToArray();
         Main.npc = Enumerable.Range(0, Main.npc.Length).Select(i => new NPC { whoAmI = i }).ToArray();
+        Main.projectile = Enumerable.Range(0, Main.projectile.Length).Select(i => new Projectile { whoAmI = i }).ToArray();
+        Main.item = Enumerable.Range(0, Main.item.Length).Select(i => new Item { whoAmI = i }).ToArray();
+        Main.dust = Enumerable.Range(0, Main.dust.Length).Select(_ => new Dust()).ToArray();
         Main.myPlayer = 0;
         Main.SceneMetrics = new SceneMetrics();
         Main.liquid = Enumerable.Range(0, Main.liquid.Length).Select(_ => new Liquid()).ToArray();

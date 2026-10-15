@@ -3,6 +3,7 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using PvPArenas.Common.Game;
@@ -118,6 +119,13 @@ internal static class JungleMapExport
                 Markers = new { Red = Position(layout.RedSpawn), Blue = Position(layout.BlueSpawn), Boss = Position(layout.BossSpawn) },
                 ArenaDryOpenFraction = area == 0 ? 0 : arenaDryOpen / (double)area,
                 TileCounts = counts,
+                FeatureStatus = VanillaMirroredJungleGenerator.LastFeatureStatus is { } status ? new
+                {
+                    status.Passed,
+                    Checks = status.Checks.Select(check => new { check.Feature, check.Count, check.Passed }).ToArray(),
+                    Structures = VanillaMirroredJungleGenerator.FeaturePlacements.Select(feature => new
+                    { feature.Feature, Bounds = Bounds(feature.Footprint) }).ToArray()
+                } : null,
                 Legend = legend,
                 Image = Path.GetFileName(imagePath),
                 ImageDescription = "Tile-data overview, one pixel per tile; cyan arena outline and spawn markers. Liquid counts overlap material counts."
