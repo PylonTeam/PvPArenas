@@ -29,18 +29,18 @@ internal static class ArenaGeneration
         if (preset.ArenaKind == ArenaKind.UndergroundJungle)
         {
             layout = MirroredJungleGenerator.CreateLayout();
-            if (IsSafeSpawn(layout.RedSpawn.X, layout.RedSpawn.Y)
-                && IsSafeSpawn(layout.BlueSpawn.X, layout.BlueSpawn.Y)
-                && IsOpenBossSpace(layout.BossSpawn.X, layout.BossSpawn.Y))
+            // The initial spawn planner validates each team and can recover from blocked player anchors.
+            if (IsOpenBossSpace(layout.BossSpawn.X, layout.BossSpawn.Y))
                 return true;
             layout = null;
-            failure = "The generated jungle did not provide clear player and boss spawns.";
+            failure = "The generated jungle did not provide a clear boss spawn.";
             return false;
         }
 
         Rectangle bounds = ArenaWorldSystem.PlayBounds;
-        Rectangle redArea = new(bounds.Left, bounds.Top, bounds.Width / 3, bounds.Height);
-        Rectangle blueArea = new(bounds.Right - bounds.Width / 3, bounds.Top, bounds.Width / 3, bounds.Height);
+        ArenaLayout searchLayout = new(bounds, default, default);
+        Rectangle redArea = ArenaRespawns.TeamArea(searchLayout, Terraria.Enums.Team.Red);
+        Rectangle blueArea = ArenaRespawns.TeamArea(searchLayout, Terraria.Enums.Team.Blue);
         int preferredY = Math.Clamp(Main.spawnTileY, bounds.Top + 3, bounds.Bottom - 1);
         if (!TryFindSpawn(redArea, preferredY, out Point redSpawn)
             || !TryFindSpawn(blueArea, preferredY, out Point blueSpawn))
@@ -69,7 +69,7 @@ internal static class ArenaGeneration
         for (int y = area.Top + 3; y < area.Bottom; y++)
         {
             int distance = Math.Abs(x - area.Center.X) + Math.Abs(y - preferredY);
-            if (distance >= nearest || !IsSafeSpawn(x, y))
+            if (distance >= nearest || !ArenaRespawns.IsValid(new Point(x, y), area))
                 continue;
             spawn = new Point(x, y);
             nearest = distance;

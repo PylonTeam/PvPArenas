@@ -5,7 +5,7 @@ using Terraria.UI;
 
 namespace PvPArenas.Common.Game.LoadoutSelector;
 
-/// <summary>Observes real inventory interactions, never network updates or round inventory clears.</summary>
+/// <summary>Observes real inventory/equipment interactions, never network updates or round inventory clears.</summary>
 [Autoload(Side = ModSide.Client)]
 internal sealed class LocalInventoryPositions : ModSystem
 {
@@ -47,7 +47,7 @@ internal sealed class LocalInventoryPositions : ModSystem
     {
         activePreset = preset;
         activeIndex = index;
-        observed = LoadoutSlotLayout.Types(Main.LocalPlayer.inventory);
+        observed = LoadoutSlotLayout.Types(Main.LocalPlayer);
         LoadoutPreviewDrawer.Invalidate();
     }
 
@@ -87,9 +87,9 @@ internal sealed class LocalInventoryPositions : ModSystem
             || manager.CurrentPhase is not (RoundManager.RoundPhase.FreezeCountdown or RoundManager.RoundPhase.Playing)
             || !manager.TryGetSelectedPreset(out BossFightPreset preset) || preset.Boss.Type != activePreset.Boss.Type
             || player.GetModPlayer<ArenaPlayer>().SelectedLoadoutIndex != activeIndex) return;
-        int[] current = LoadoutSlotLayout.Types(player.inventory);
+        int[] current = LoadoutSlotLayout.Types(player);
         if (observed != null && observed.SequenceEqual(current)) return;
-        LocalLoadoutPositions.Remember(preset, activeIndex, ArenaPlayer.ResolveBaseLoadout(preset, activeIndex), player.inventory);
+        LocalLoadoutPositions.Remember(preset, activeIndex, ArenaPlayer.ResolveBaseLoadout(preset, activeIndex), player);
         observed = current;
         LoadoutPreviewDrawer.Invalidate();
     }

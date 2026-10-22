@@ -1,4 +1,5 @@
 using PvPArenas.Core.Configs.ConfigElements.LoadoutItems;
+using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -21,6 +22,10 @@ public class Loadout
 
     [CustomModConfigItem(typeof(LoadoutInventoryListElement))]
     public List<LoadoutItem> Inventory { get; set; } = [];
+
+    // Resolved functional/vanity slots, kept separate from editable kit definitions.
+    [JsonIgnore]
+    internal LoadoutItem[] ArmorSlots { get; init; }
 }
 public class LoadoutArmor
 {

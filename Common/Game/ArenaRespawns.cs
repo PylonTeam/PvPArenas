@@ -77,35 +77,38 @@ internal static class ArenaRespawns
             HashSet<Point> authored = preset.ArenaKind == ArenaKind.ArenasV10
                 ? new(team == Team.Red ? RedPoints : BluePoints) : [];
             List<InitialCandidate> candidates = [];
-            for (int y = side.Top + 3; y < side.Bottom; y++)
-            for (int x = side.Left + 1; x < side.Right - 1; x++)
-            {
-                Point point = new(x, y);
-                // Authored anchors may occupy separate chambers; preserve their existing
-                // teleport semantics. Only natural fallback floors must share the anchor's cave.
-                bool isAuthored = authored.Contains(point);
-                if ((!isAuthored && !reachable[terrain.Index(x, y)]) || !IsValid(point, side)) continue;
-                Rectangle body = InitialBody(point, width, height);
-                if (IsInitialBodySafe(body, y, side))
-                    candidates.Add(new(point, body, terrain.RoomArea(x, y), isAuthored));
-            }
+            AddCandidates(connected: true);
 
             if (!TryReserveInitial(candidates, teammates.Length, side, out List<InitialCandidate> chosen))
             {
-                // Farthest-point sampling can leave narrow gaps on crowded ledges. Pack from
-                // their edges first, then spread the requested players over that safe packing.
-                List<InitialCandidate> packed = PackInitialCandidates(candidates);
-                if (packed.Count < teammates.Length
-                    || !TryReserveInitial(packed, teammates.Length, side, out chosen))
+                // A blocked or cramped anchor cave must not hide safe starts elsewhere on this side.
+                AddCandidates(connected: false);
+                if (!TryReserveInitial(candidates, teammates.Length, side, out chosen))
                 {
                     spawns.Clear();
                     failure = $"Not enough non-overlapping safe {team} starting positions for {teammates.Length} players "
-                        + $"({packed.Count} positions could be reserved).";
+                        + $"({PackInitialCandidates(candidates).Count} positions could be reserved).";
                     return false;
                 }
             }
             for (int i = 0; i < teammates.Length; i++)
                 spawns.Add(teammates[i].whoAmI, chosen[i].Point);
+
+            void AddCandidates(bool connected)
+            {
+                for (int y = side.Top + 3; y < side.Bottom; y++)
+                for (int x = side.Left + 1; x < side.Right - 1; x++)
+                {
+                    Point point = new(x, y);
+                    // Authored points retain their teleport semantics even in separate chambers.
+                    bool isAuthored = authored.Contains(point);
+                    bool primary = isAuthored || reachable[terrain.Index(x, y)];
+                    if (primary != connected || !IsValid(point, side)) continue;
+                    Rectangle body = InitialBody(point, width, height);
+                    if (IsInitialBodySafe(body, y, side))
+                        candidates.Add(new(point, body, terrain.RoomArea(x, y), isAuthored));
+                }
+            }
         }
         return true;
     }
@@ -143,6 +146,15 @@ internal static class ArenaRespawns
     }
 
     private static bool TryReserveInitial(List<InitialCandidate> candidates, int count, Rectangle side,
+        out List<InitialCandidate> chosen)
+    {
+        if (TrySpreadInitial(candidates, count, side, out chosen)) return true;
+        // Spread-first choices can strand narrow gaps. Pack from ledge edges before broadening the search.
+        List<InitialCandidate> packed = PackInitialCandidates(candidates);
+        return packed.Count >= count && TrySpreadInitial(packed, count, side, out chosen);
+    }
+
+    private static bool TrySpreadInitial(List<InitialCandidate> candidates, int count, Rectangle side,
         out List<InitialCandidate> chosen)
     {
         chosen = [];
@@ -253,15 +265,22 @@ internal static class ArenaRespawns
         // Rebuild from live tiles at respawn time: edits, settled liquids and a new seed are all respected.
         OpenTerrain terrain = new(layout.ArenaBounds);
         bool[] reachable = terrain.ReachableFrom(layout.PlayerSpawn((Team)player.team));
-        for (int y = side.Top + 3; y < side.Bottom; y++)
-        for (int x = side.Left + 1; x < side.Right - 1; x++)
-        {
-            Point point = new(x, y);
-            if (reachable[terrain.Index(x, y)] && IsValid(point, side))
-                selection.Consider(point, terrain.RoomArea(x, y));
-        }
+        ConsiderTerrain(connected: true);
+        // If the anchor is blocked or its cave has no safe floor, search the rest of the team's side.
+        if (!selection.Found) ConsiderTerrain(connected: false);
         spawn = selection.Point;
         return selection.Found;
+
+        void ConsiderTerrain(bool connected)
+        {
+            for (int y = side.Top + 3; y < side.Bottom; y++)
+            for (int x = side.Left + 1; x < side.Right - 1; x++)
+            {
+                Point point = new(x, y);
+                if (reachable[terrain.Index(x, y)] == connected && IsValid(point, side))
+                    selection.Consider(point, terrain.RoomArea(x, y));
+            }
+        }
     }
 
     internal static bool IsValid(Point point, Rectangle side)

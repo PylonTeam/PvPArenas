@@ -829,45 +829,9 @@ internal static class LoadoutPreviewDrawer
         for (int i = 0; i < preview.armor.Length; i++)
             preview.armor[i] = new Item();
 
-        SetPreviewEquipment(
-            preview,
-            0,
-            loadout.Armor?.Head);
-
-        SetPreviewEquipment(
-            preview,
-            1,
-            loadout.Armor?.Body);
-
-        SetPreviewEquipment(
-            preview,
-            2,
-            loadout.Armor?.Legs);
-
-        SetPreviewEquipment(
-            preview,
-            3,
-            loadout.Accessories?.Accessory1);
-
-        SetPreviewEquipment(
-            preview,
-            4,
-            loadout.Accessories?.Accessory2);
-
-        SetPreviewEquipment(
-            preview,
-            5,
-            loadout.Accessories?.Accessory3);
-
-        SetPreviewEquipment(
-            preview,
-            6,
-            loadout.Accessories?.Accessory4);
-
-        SetPreviewEquipment(
-            preview,
-            7,
-            loadout.Accessories?.Accessory5);
+        IReadOnlyList<LoadoutItem> armor = LoadoutSlotLayout.ArmorItems(loadout);
+        for (int i = 0; i < armor.Count && i < preview.armor.Length; i++)
+            preview.armor[i] = MakeItem(armor[i]?.Item?.Type ?? ItemID.None, armor[i]?.Stack ?? 1);
 
         using (new Main.CurrentPlayerOverride(preview))
         {
@@ -879,23 +843,6 @@ internal static class LoadoutPreviewDrawer
         }
 
         return preview;
-    }
-
-    private static void SetPreviewEquipment(
-        Player preview,
-        int slot,
-        ItemDefinition definition)
-    {
-        if (preview?.armor == null ||
-            slot < 0 ||
-            slot >= preview.armor.Length)
-        {
-            return;
-        }
-
-        preview.armor[slot].SetDefaults(
-            definition?.Type
-            ?? ItemID.None);
     }
 
     private static void DrawPreviewBox(

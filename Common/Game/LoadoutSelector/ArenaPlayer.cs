@@ -23,10 +23,10 @@ internal sealed class ArenaPlayer : ModPlayer
 
     internal int SelectedLoadoutIndex;
     private ArenaLoadoutDelivery delivery;
-    internal ArenaLoadoutDelivery Delivery => delivery ??= new();
+    internal ArenaLoadoutDelivery Delivery => delivery ??= new(Player);
     internal bool AwaitingLoadoutDelivery => !roundPrepared || Delivery.AwaitingGrant;
 
-    public override void Initialize() => delivery = new();
+    public override void Initialize() => delivery = new(Player);
 
     internal void MarkLoadoutReceived(int index)
     {
@@ -57,7 +57,7 @@ internal sealed class ArenaPlayer : ModPlayer
     {
         roundPrepared = false;
         arenaSpawnActive = false;
-        delivery = new();
+        delivery = new(Player);
         if (!ModContent.GetInstance<RoundManager>().IsActive)
             return;
         RoundManager.RoundPhase phase = ModContent.GetInstance<RoundManager>().CurrentPhase;
@@ -570,16 +570,11 @@ internal sealed class ArenaPlayer : ModPlayer
         Loadout loadout = Main.netMode == NetmodeID.Server && !preset.IsSandbox()
             ? player.GetModPlayer<ArenaPlayer>().Delivery.Arrange(preset, player.GetModPlayer<ArenaPlayer>().SelectedLoadoutIndex)
             : ResolveLoadout(preset, player);
-        ItemDefinition[] equipped =
-        [
-            loadout.Armor?.Head, loadout.Armor?.Body, loadout.Armor?.Legs,
-            loadout.Accessories?.Accessory1, loadout.Accessories?.Accessory2,
-            loadout.Accessories?.Accessory3, loadout.Accessories?.Accessory4,
-            loadout.Accessories?.Accessory5
-        ];
+        IReadOnlyList<LoadoutItem> equipped = LoadoutSlotLayout.ArmorItems(loadout);
         List<LoadoutSlot> slots = [];
-        for (int i = 0; i < equipped.Length; i++)
-            slots.Add(new(PlayerItemSlotID.Armor0 + i, equipped[i]?.Type ?? ItemID.None));
+        for (int i = 0; i < equipped.Count; i++)
+            slots.Add(new(PlayerItemSlotID.Armor0 + i,
+                equipped[i]?.Item?.Type ?? ItemID.None, equipped[i]?.Stack ?? 1));
         for (int i = 0; i < (loadout.Inventory?.Count ?? 0) && i < LoadoutSlotLayout.SlotCount; i++)
             if (loadout.Inventory[i] is LoadoutItem item)
                 slots.Add(new(PlayerItemSlotID.Inventory0 + i, item.Item?.Type ?? ItemID.None, item.Stack));

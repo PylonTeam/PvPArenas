@@ -7,7 +7,7 @@ using Terraria.ModLoader.IO;
 
 namespace PvPArenas.Common.Game.LoadoutSelector;
 
-/// <summary>Client-only inventory-index/item-ID preferences. Kit definitions remain authoritative.</summary>
+/// <summary>Client-only inventory/equipment slot preferences. Kit definitions remain authoritative.</summary>
 internal static class LocalLoadoutPositions
 {
     private static readonly Dictionary<string, int[]> positions = [];
@@ -17,7 +17,7 @@ internal static class LocalLoadoutPositions
     private static bool IsLocal => !Main.dedServ && Main.netMode != NetmodeID.Server;
 
     internal static Loadout Apply(BossFightPreset preset, int index, Loadout loadout) =>
-        LoadoutSlotLayout.Arrange(loadout, Get(preset, index, loadout));
+        LoadoutSlotLayout.Arrange(loadout, Get(preset, index, loadout), Main.LocalPlayer);
 
     internal static int[] Get(BossFightPreset preset, int index, Loadout loadout)
     {
@@ -25,16 +25,18 @@ internal static class LocalLoadoutPositions
             return LoadoutSlotLayout.Types(LoadoutSlotLayout.Arrange(loadout, null));
         Load();
         string key = Key(preset, index);
+        // Persist slot preferences independently of the current character/world's unlocks.
+        // The actual grant checks usable equipment slots with the owning player.
         int[] valid = LoadoutSlotLayout.Types(LoadoutSlotLayout.Arrange(loadout, positions.GetValueOrDefault(key)));
         Set(key, valid); // Seeds defaults and repairs obsolete entries quietly.
         return (int[])valid.Clone();
     }
 
-    internal static void Remember(BossFightPreset preset, int index, Loadout loadout, Item[] inventory)
+    internal static void Remember(BossFightPreset preset, int index, Loadout loadout, Player player)
     {
         if (!IsLocal || index < 0 || index >= (preset?.Loadouts?.Count ?? 0)) return;
         Load();
-        Set(Key(preset, index), LoadoutSlotLayout.Types(LoadoutSlotLayout.Arrange(loadout, LoadoutSlotLayout.Types(inventory))));
+        Set(Key(preset, index), LoadoutSlotLayout.Types(LoadoutSlotLayout.Arrange(loadout, LoadoutSlotLayout.Types(player))));
     }
 
     private static string Key(BossFightPreset preset, int index)
@@ -60,15 +62,24 @@ internal static class LocalLoadoutPositions
         try
         {
             TagCompound root = TagIO.FromFile(FilePath);
-            if (root.GetInt("Version") != 2) return; // Old index permutations cannot identify changed kit items safely.
+            int version = root.GetInt("Version");
+            if (version is not (2 or 3)) return; // Old index permutations cannot identify changed kit items safely.
             foreach (TagCompound entry in root.GetList<TagCompound>("Loadouts"))
             {
-                int[] slots = new int[LoadoutSlotLayout.SlotCount];
+                // Keep v2 entries inventory-only until their configured equipment is normalized.
+                int[] slots = new int[version == 2 ? LoadoutSlotLayout.SlotCount : LoadoutSlotLayout.PositionCount];
                 foreach (TagCompound item in entry.GetList<TagCompound>("Slots"))
                 {
                     int slot = item.GetInt("InventoryIndex");
-                    if (slot >= 0 && slot < slots.Length) slots[slot] = item.GetInt("ItemID");
+                    if (slot >= 0 && slot < LoadoutSlotLayout.SlotCount) slots[slot] = item.GetInt("ItemID");
                 }
+                if (version == 3)
+                    foreach (TagCompound item in entry.GetList<TagCompound>("ArmorSlots"))
+                    {
+                        int slot = item.GetInt("ArmorIndex");
+                        if (slot >= 0 && slot < LoadoutSlotLayout.ArmorSlotCount)
+                            slots[LoadoutSlotLayout.SlotCount + slot] = item.GetInt("ItemID");
+                    }
                 positions[entry.GetString("Key")] = slots;
             }
         }
@@ -83,13 +94,17 @@ internal static class LocalLoadoutPositions
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
             TagCompound root = new()
             {
-                ["Version"] = 2,
+                ["Version"] = 3,
                 ["Loadouts"] = positions.OrderBy(p => p.Key).Select(pair => new TagCompound
                 {
                     ["Key"] = pair.Key,
-                    ["Slots"] = pair.Value.Select((type, index) => new TagCompound
+                    ["Slots"] = pair.Value.Take(LoadoutSlotLayout.SlotCount).Select((type, index) => new TagCompound
                     {
                         ["InventoryIndex"] = index, ["ItemID"] = type
+                    }).Where(tag => tag.GetInt("ItemID") > 0).ToList(),
+                    ["ArmorSlots"] = pair.Value.Skip(LoadoutSlotLayout.SlotCount).Select((type, index) => new TagCompound
+                    {
+                        ["ArmorIndex"] = index, ["ItemID"] = type
                     }).Where(tag => tag.GetInt("ItemID") > 0).ToList()
                 }).ToList()
             };

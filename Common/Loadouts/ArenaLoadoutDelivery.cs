@@ -13,6 +13,7 @@ namespace PvPArenas.Common.Loadouts;
 /// <summary>Collect slot preferences before granting a kit, then acknowledge its installation.</summary>
 internal sealed class ArenaLoadoutDelivery
 {
+    private readonly Player owner;
     private int revision, requestedBoss, requestedIndex;
     private int[] preferences;
     private bool requestingPreferences, requestSent, awaitingAcknowledgement;
@@ -22,6 +23,8 @@ internal sealed class ArenaLoadoutDelivery
 
     internal bool Pending => requestingPreferences || awaitingAcknowledgement;
     internal bool AwaitingGrant => receivedRevision == 0;
+
+    internal ArenaLoadoutDelivery(Player owner) => this.owner = owner;
 
     internal void Reset()
     {
@@ -73,7 +76,7 @@ internal sealed class ArenaLoadoutDelivery
     {
         // Validate packing before touching the player's live inventory.
         preferences = LoadoutSlotLayout.Types(LoadoutSlotLayout.Arrange(
-            ArenaPlayer.ResolveBaseLoadout(preset, index), positions));
+            ArenaPlayer.ResolveBaseLoadout(preset, index), positions, owner));
         requestedBoss = preset.Boss.Type;
         requestedIndex = index;
         revision++;
@@ -82,7 +85,7 @@ internal sealed class ArenaLoadoutDelivery
 
     internal Loadout Arrange(BossFightPreset preset, int index) => LoadoutSlotLayout.Arrange(
         ArenaPlayer.ResolveBaseLoadout(preset, index),
-        requestedBoss == preset.Boss.Type && requestedIndex == index ? preferences : null);
+        requestedBoss == preset.Boss.Type && requestedIndex == index ? preferences : null, owner);
 
     internal void SendGrant(Player player, BossFightPreset preset)
     {
@@ -133,7 +136,7 @@ internal sealed class ArenaLoadoutDelivery
 
     internal static int[] ReadPreferences(BinaryReader reader)
     {
-        int[] positions = new int[LoadoutSlotLayout.SlotCount];
+        int[] positions = new int[LoadoutSlotLayout.PositionCount];
         for (int i = 0; i < positions.Length; i++) positions[i] = reader.ReadInt32();
         return positions;
     }
@@ -147,7 +150,7 @@ internal sealed class ArenaLoadoutDelivery
         if (!delivery.requestingPreferences || delivery.revision != revision
             || delivery.requestedBoss != boss || delivery.requestedIndex != index) return;
         delivery.preferences = LoadoutSlotLayout.Types(LoadoutSlotLayout.Arrange(
-            ArenaPlayer.ResolveBaseLoadout(preset, index), positions));
+            ArenaPlayer.ResolveBaseLoadout(preset, index), positions, player));
         delivery.requestingPreferences = false;
     }
 
