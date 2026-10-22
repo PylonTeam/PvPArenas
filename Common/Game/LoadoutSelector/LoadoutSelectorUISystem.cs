@@ -7,8 +7,6 @@ namespace PvPArenas.Common.Game.LoadoutSelector;
 [Autoload(Side = ModSide.Client)]
 internal sealed class LoadoutSelectorUISystem : ModSystem
 {
-    private const int Top = 80;
-
     public override void OnWorldLoad() => LoadoutPreviewDrawer.Reset();
     public override void OnWorldUnload() => LoadoutPreviewDrawer.Reset();
 
@@ -38,7 +36,7 @@ internal sealed class LoadoutSelectorUISystem : ModSystem
 
         RoundManager manager = ModContent.GetInstance<RoundManager>();
         if (manager.CurrentPhase == RoundManager.RoundPhase.FreezeCountdown)
-            LoadoutPreviewDrawer.Draw(Top);
+            LoadoutPreviewDrawer.Draw();
 
         return true;
     }

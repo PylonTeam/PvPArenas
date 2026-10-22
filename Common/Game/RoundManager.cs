@@ -80,6 +80,11 @@ internal sealed class RoundManager : GameEvent
     private bool ChooseTeam => CurrentPhase == RoundPhase.VotingOrEndScreen
         && (Team)Main.LocalPlayer.team is not (Team.Red or Team.Blue);
     public override int TimerSidePadding => ChooseTeam ? 56 : 16;
+    public override bool ShowCountdownTimerText => CurrentPhase == RoundPhase.FreezeCountdown;
+    internal string LoadoutArenaName => TryGetSelectedPreset(out BossFightPreset preset)
+        ? preset.IsSandbox() ? Language.GetTextValue("Mods.PvPArenas.LoadoutSelector.Sandbox")
+            : Lang.GetNPCNameValue(preset.Boss?.Type ?? NPCID.None)
+        : DisplayName;
     public override string TimerTooltip => string.IsNullOrEmpty(PreparationFailure)
         ? "Arenas round status" : Language.GetTextValue(
             ErkySSCCompat.IsAdmin(Main.myPlayer, out _)
@@ -98,7 +103,7 @@ internal sealed class RoundManager : GameEvent
             "Mods.PvPArenas.Round.NextArenaStatus", GameTimerUISystem.FormatTime(RemainingTicks)),
         RoundPhase.Generating => SelectedBossType == NPCID.Plantera ? "Generating jungle"
             : SelectedBossType == NPCID.CultistBoss ? "Generating dungeon" : "Preparing arena",
-        RoundPhase.FreezeCountdown => $"Starting {GameTimerUISystem.FormatTime(RemainingTicks)}",
+        RoundPhase.FreezeCountdown => LoadoutArenaName,
         RoundPhase.Playing => GameTimerUISystem.FormatTime(RemainingTicks),
         _ => "Arenas"
     };

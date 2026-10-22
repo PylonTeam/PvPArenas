@@ -81,7 +81,7 @@ internal sealed class ScorelineUISystem : ModSystem
 
     internal static void DrawTimerDecoration(RoundManager manager, Rectangle panel, float alpha)
     {
-        if (manager.CurrentPhase is RoundManager.RoundPhase.FreezeCountdown or RoundManager.RoundPhase.Playing)
+        if (manager.CurrentPhase == RoundManager.RoundPhase.Playing)
         {
             const int iconSize = 38;
             Rectangle icon = new(panel.Center.X - iconSize / 2, panel.Center.Y - iconSize / 2, iconSize, iconSize);
@@ -101,8 +101,10 @@ internal sealed class ScorelineUISystem : ModSystem
 
     private static Rectangle TeamPanel(Rectangle statusPanel, Team team, int playerCount, string damage)
     {
+        int availableWidth = team == Team.Red ? statusPanel.Left - 6 : Main.screenWidth - statusPanel.Right - 6;
+        int maximumWidth = Math.Max(TeamHeight, Math.Min(MaxTeamWidth, availableWidth));
         int width = string.IsNullOrEmpty(damage)
-            ? Math.Clamp(HeadPadding * 2 + playerCount * HeadSize, TeamHeight, MaxTeamWidth)
+            ? Math.Clamp(HeadPadding * 2 + playerCount * HeadSize, TeamHeight, maximumWidth)
             : DamagePanelWidth;
         int x = team == Team.Red
             ? statusPanel.X - PanelGap - width

@@ -69,8 +69,11 @@ internal sealed class BossVoteUISystem : ModSystem
 
         BossVoteSystem vote = ModContent.GetInstance<BossVoteSystem>();
         float seconds = (float)gameTime.ElapsedGameTime.TotalSeconds;
-        presentation.Update(vote.BallotId, vote.Active, vote.Winner, seconds);
-        if (!presentation.Visible)
+        ArenaVoteUISettings ui = ArenaVoteUILayout.Create();
+        presentation.UpdateWithSettings(new(BallotId: vote.BallotId, Active: vote.Active,
+            Winner: vote.Winner, Seconds: seconds, Settings: ui));
+        ArenaVoteAnimationState animation = presentation.Animation(ui);
+        if (!animation.Visible)
             return;
 
         if (headsBallotId != vote.BallotId)
@@ -81,12 +84,13 @@ internal sealed class BossVoteUISystem : ModSystem
         }
         RefreshHeads(vote.Active);
 
-        Rectangle panel = BossVoteDrawer.ActivePanel();
-        float blend = ArenaUIStyle.HoverBlend(seconds);
+        ArenaVoteLayoutArgs layout = BossVoteDrawer.LayoutArgs(ui);
+        Rectangle panel = ArenaVoteGeometry.ActivePanel(layout);
+        float blend = 1f - MathF.Exp(-Math.Max(0f, ui.HoverAnimationSpeed) * Math.Max(0f, seconds));
         for (int i = 0; i < hoverAmounts.Length; i++)
         {
-            bool hover = presentation.Interactive && !PlayerInput.IgnoreMouseInterface
-                && BossVoteDrawer.ChoiceBox(panel, i).Contains(Main.mouseX, Main.mouseY);
+            bool hover = animation.Interactive && !PlayerInput.IgnoreMouseInterface
+                && ArenaVoteGeometry.ChoiceBox(panel, i, layout).Contains(Main.mouseX, Main.mouseY);
             hoverAmounts[i] = MathHelper.Lerp(hoverAmounts[i], hover ? 1f : 0f, blend);
         }
     }

@@ -18,65 +18,21 @@ internal static class BossVoteDrawer
     private static Texture2D PanelBackground => Main.Assets.Request<Texture2D>("Images/UI/PanelBackground").Value;
     private static Texture2D PanelBorder => Main.Assets.Request<Texture2D>("Images/UI/PanelBorder").Value;
     private static readonly RasterizerState ClipRasterizer = new() { CullMode = CullMode.None, ScissorTestEnable = true };
-    private const int Padding = 16, ChoiceGap = 12, ChoiceHeight = 88;
-    private const int ChoicesTop = 90, ResultTop = 60, HeadsTop = 46;
     private static float opacity = 1f;
 
-    internal static Rectangle ActivePanel()
-    {
-        int width = Math.Max(1, Math.Min(500, Main.screenWidth - 12));
-        int rows = (FightPresets.Count + Columns(width) - 1) / Columns(width);
-        int height = Math.Max(1, Math.Min(ChoicesTop + rows * ChoiceHeight + (rows - 1) * ChoiceGap + Padding,
-            Main.screenHeight - 54));
-        int top = Math.Max(6, Math.Min(80, Main.screenHeight - height - 6));
-        return new Rectangle((Main.screenWidth - width) / 2, top, width, height);
-    }
+    internal static ArenaVoteLayoutArgs LayoutArgs(ArenaVoteUISettings settings) =>
+        new(Main.screenWidth, Main.screenHeight, FightPresets.Count, settings);
 
-    private static int Columns(int width) => width < 400 ? 1 : 2;
-
-    private static int CardsTop(Rectangle panel)
-    {
-        int rows = (FightPresets.Count + Columns(panel.Width) - 1) / Columns(panel.Width);
-        return Math.Min(ChoicesTop, Math.Max(66, panel.Height - Padding - (rows - 1) * ChoiceGap - rows * 32));
-    }
-
-    internal static Rectangle ChoiceBox(Rectangle panel, int index)
-    {
-        int columns = Columns(panel.Width), rows = (FightPresets.Count + columns - 1) / columns;
-        int width = Math.Max(1, (panel.Width - Padding * 2 - ChoiceGap * (columns - 1)) / columns);
-        int top = CardsTop(panel);
-        int height = Math.Max(1, Math.Min(ChoiceHeight, (panel.Height - top - Padding - (rows - 1) * ChoiceGap) / rows));
-        int left = panel.X + Padding + index % columns * (width + ChoiceGap);
-        if (index / columns == rows - 1 && FightPresets.Count % columns == 1)
-            left = panel.Center.X - width / 2;
-        return new Rectangle(left, panel.Y + top + index / columns * (height + ChoiceGap), width, height);
-    }
-
-    internal static Rectangle ResultPanel(Rectangle panel)
-    {
-        int width = Math.Min(panel.Width, Math.Max(300, ChoiceBox(panel, 0).Width + Padding * 2));
-        return new(panel.Center.X - width / 2, panel.Y, width,
-            Math.Max(1, Math.Min(ResultTop + ChoiceHeight + Padding, Main.screenHeight - panel.Y - 6)));
-    }
-
-    internal static Rectangle ResultBox(Rectangle panel, int index)
-    {
-        Rectangle box = ChoiceBox(panel, index);
-        Rectangle result = ResultPanel(panel);
-        box.X = result.Center.X - box.Width / 2;
-        box.Y = result.Y + ResultTop;
-        box.Height = Math.Max(1, Math.Min(ChoiceHeight, result.Height - ResultTop - Padding));
-        return box;
-    }
-
-    internal static int VoterHeadSize(Rectangle box)
-    {
-        int size = Math.Min(36, box.Height - HeadsTop - 8);
-        return size >= 20 ? size : 0;
-    }
-
-    internal static Rectangle SelectionLine(Rectangle box) =>
-        new(box.X + 12, box.Y + (box.Height < 48 ? 30 : 36), box.Width - 24, 2);
+    // Public geometry entry points stay fresh for external callers; Draw uses one shared snapshot.
+    internal static Rectangle ActivePanel() => ArenaVoteGeometry.ActivePanel(LayoutArgs(ArenaVoteUILayout.Create()));
+    internal static Rectangle ChoiceBox(Rectangle panel, int index) =>
+        ArenaVoteGeometry.ChoiceBox(panel, index, LayoutArgs(ArenaVoteUILayout.Create()));
+    internal static Rectangle ResultPanel(Rectangle panel) =>
+        ArenaVoteGeometry.ResultPanel(panel, LayoutArgs(ArenaVoteUILayout.Create()));
+    internal static Rectangle ResultBox(Rectangle panel, int index) =>
+        ArenaVoteGeometry.ResultBox(panel, index, LayoutArgs(ArenaVoteUILayout.Create()));
+    internal static int VoterHeadSize(Rectangle box) => ArenaVoteGeometry.VoterHeadSize(box, ArenaVoteUILayout.Create());
+    internal static Rectangle SelectionLine(Rectangle box) => ArenaVoteGeometry.SelectionLine(box, ArenaVoteUILayout.Create());
 
     private static Rectangle Blend(Rectangle from, Rectangle to, float amount) => new(
         (int)MathF.Round(MathHelper.Lerp(from.X, to.X, amount)),
@@ -91,12 +47,18 @@ internal static class BossVoteDrawer
     {
         BossVoteSystem vote = ModContent.GetInstance<BossVoteSystem>();
         RoundManager manager = ModContent.GetInstance<RoundManager>();
-        Rectangle activePanel = ActivePanel();
-        float transition = Ease(presentation.ResultTransition);
-        Rectangle panel = presentation.Complete ? Blend(activePanel, ResultPanel(activePanel), transition) : activePanel;
-        float opening = Ease(presentation.Opening), closing = presentation.Closing;
-        float height = MathHelper.Lerp(panel.Height, 2f, Ease(Math.Clamp(closing / .8f, 0f, 1f)));
-        float width = panel.Width * (1f - Ease(Math.Clamp((closing - .8f) / .2f, 0f, 1f)));
+        ArenaVoteUISettings ui = ArenaVoteUILayout.Create();
+        ArenaVoteLayoutArgs layout = LayoutArgs(ui);
+        ArenaVoteAnimationState animation = presentation.Animation(ui);
+        Rectangle activePanel = ArenaVoteGeometry.ActivePanel(layout);
+        float transition = Ease(animation.ResultTransition);
+        Rectangle panel = presentation.Complete ? Blend(activePanel, ArenaVoteGeometry.ResultPanel(activePanel, layout), transition) : activePanel;
+        float opening = Ease(animation.Opening), closing = animation.Closing;
+        float verticalFraction = Math.Max(.001f, ui.ClosingVerticalFraction);
+        float height = MathHelper.Lerp(panel.Height, ui.ClosingTargetHeight,
+            Ease(Math.Clamp(closing / verticalFraction, 0f, 1f)));
+        float width = panel.Width * (1f - Ease(Math.Clamp((closing - verticalFraction)
+            / Math.Max(.001f, ui.ClosingHorizontalFraction), 0f, 1f)));
         Rectangle clip = new(panel.Center.X - (int)width / 2, panel.Center.Y - (int)(height * opening) / 2,
             Math.Max(1, (int)width), Math.Max(1, (int)(height * opening)));
         GraphicsDevice device = Main.spriteBatch.GraphicsDevice;
@@ -112,26 +74,32 @@ internal static class BossVoteDrawer
         Main.spriteBatch.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.LinearClamp,
             DepthStencilState.None, ClipRasterizer, null, Main.UIScaleMatrix);
         device.ScissorRectangle = Rectangle.Intersect(oldRasterizer.ScissorTestEnable ? oldClip : device.Viewport.Bounds, screenClip);
-        opacity = opening * (1f - Ease(closing));
+        opacity = opening * (1f - Ease(closing)) * Math.Clamp(ui.Opacity, 0f, 1f);
         try
         {
             Point mouse = new(Main.mouseX, Main.mouseY);
-            bool interactive = presentation.Interactive && vote.Active && !PlayerInput.IgnoreMouseInterface;
+            bool interactive = animation.Interactive && vote.Active && !PlayerInput.IgnoreMouseInterface;
             if (panel.Contains(mouse)) Main.LocalPlayer.mouseInterface = true;
-            DrawPanel(panel, PanelFill, PanelEdge, 10);
-            bool compactHeader = CardsTop(activePanel) < ChoicesTop && !presentation.Complete;
+            DrawPanel(panel, ui.PanelFillColor, ui.PanelBorderColor, Math.Max(1, ui.PanelCornerRadius));
+            bool compactHeader = ArenaVoteGeometry.CardsTop(activePanel, layout) < ui.OptionsTop && !presentation.Complete;
             Header(Label(presentation.Complete ? "CompleteHeader" : "ActiveHeader"),
-                new Vector2(panel.Center.X, panel.Y + (compactHeader ? 3 : 8)), panel.Width - Padding * 2,
-                compactHeader ? .5f : .65f);
+                new Vector2(panel.Center.X + ui.HeaderTextXOffset,
+                    panel.Y + (compactHeader ? ui.CompactHeaderTextYOffset : ui.HeaderTextYOffset)),
+                panel.Width - ui.HeaderTextPadding * 2,
+                compactHeader ? ui.CompactHeaderTextScale : ui.HeaderTextScale, ui.TitleColor);
             if (!presentation.Complete)
             {
-                Text(Label("ChooseBoss"), new Vector2(panel.Center.X, panel.Y + (compactHeader ? 29 : 45)),
-                    Color.White, compactHeader ? .8f : .95f, panel.Width - Padding * 2);
-                Rectangle track = new(panel.X + Padding, panel.Y + CardsTop(activePanel) - 15, panel.Width - Padding * 2, 3);
+                Text(Label("ChooseBoss"), new Vector2(panel.Center.X + ui.SubtitleTextXOffset,
+                    panel.Y + (compactHeader ? ui.CompactSubtitleTextYOffset : ui.SubtitleTextYOffset)),
+                    ui.TextColor, compactHeader ? ui.CompactSubtitleTextScale : ui.SubtitleTextScale,
+                    panel.Width - ui.SubtitleTextPadding * 2);
+                Rectangle track = new(panel.X + ui.ProgressXPadding,
+                    panel.Y + ArenaVoteGeometry.CardsTop(activePanel, layout) - ui.ProgressYOffsetFromOptions,
+                    Math.Max(1, panel.Width - ui.ProgressXPadding * 2), Math.Max(1, ui.ProgressHeight));
                 float progress = Math.Clamp(manager.RemainingTicks / (float)Math.Max(1, vote.DurationTicks), 0f, 1f);
-                Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value, track, Color.Black * (.3f * opacity));
+                Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value, track, ui.ProgressTrackColor * (ui.ProgressTrackOpacity * opacity));
                 Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value,
-                    new Rectangle(track.X, track.Y, (int)(track.Width * progress), track.Height), Progress * opacity);
+                    new Rectangle(track.X, track.Y, (int)(track.Width * progress), track.Height), ui.ProgressColor * opacity);
             }
 
             float panelOpacity = opacity;
@@ -143,20 +111,21 @@ internal static class BossVoteDrawer
                     : step;
                 bool resultChoice = presentation.Complete && index == presentation.Winner;
                 if (presentation.Complete && !resultChoice && transition >= 1f) continue;
-                Rectangle box = ChoiceBox(activePanel, index);
+                Rectangle box = ArenaVoteGeometry.ChoiceBox(activePanel, index, layout);
                 if (resultChoice)
-                    box = Blend(box, ResultBox(activePanel, index), transition);
+                    box = Blend(box, ArenaVoteGeometry.ResultBox(activePanel, index, layout), transition);
                 opacity = panelOpacity * (presentation.Complete && !resultChoice ? 1f - transition : 1f);
-                DrawChoice(vote, box, index, mouse, interactive, hover[index] * (1f - transition), resultChoice);
+                DrawChoice(vote, box, index, mouse, interactive, hover[index] * (1f - transition), resultChoice, ui);
                 DrawVoterHeads(box, vote.VotersFor(index), mouse, heads, headRenderer,
                     closing == 0f && (!presentation.Complete || resultChoice && transition >= 1f),
-                    resultChoice ? transition : 0f);
+                    resultChoice ? transition : 0f, ui);
                 opacity = panelOpacity;
             }
             if (closing > 0f)
                 Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value,
-                    new Rectangle(panel.X + 10, panel.Center.Y, panel.Width - 20, 2),
-                    Accent * (Ease(Math.Clamp(closing / .8f, 0f, 1f)) * opacity));
+                    new Rectangle(panel.X + ui.ClosingLineXPadding, panel.Center.Y,
+                        Math.Max(1, panel.Width - ui.ClosingLineXPadding * 2), Math.Max(1, ui.ClosingLineHeight)),
+                    ui.AccentColor * (Ease(Math.Clamp(closing / verticalFraction, 0f, 1f)) * opacity));
         }
         finally
         {
@@ -169,27 +138,32 @@ internal static class BossVoteDrawer
     }
 
     private static void DrawChoice(BossVoteSystem vote, Rectangle box, int index, Point mouse,
-        bool interactive, float hover, bool resultChoice)
+        bool interactive, float hover, bool resultChoice, ArenaVoteUISettings ui)
     {
         bool available = FightPresets.IsAvailable(index);
         interactive &= available;
         if (!available) hover = 0f;
         bool selected = resultChoice || vote.LocalVote == index;
-        bool compact = box.Height < 48;
-        int titleY = compact ? 5 : 9, iconSize = compact ? 24 : 28, nameLeft = compact ? 36 : 44;
-        float textScale = compact ? .8f : .9f;
-        Color fill = ChoiceFill(hover, selected ? 1f : 0f);
-        DrawPanel(box, fill, Color.Transparent, 8);
+        bool compact = box.Height < ui.CompactOptionThreshold;
+        int titleY = compact ? ui.CompactOptionTextYOffset : ui.OptionTextYOffset;
+        int iconSize = compact ? ui.CompactBossIconSize : ui.BossIconSize;
+        int nameLeft = compact ? ui.CompactOptionTextXOffset : ui.OptionTextXOffset;
+        float textScale = compact ? ui.CompactOptionTextScale : ui.OptionTextScale;
+        Color fill = ArenaVoteUILayout.ChoiceFill(ui, hover, selected);
+        DrawPanel(box, fill, Color.Transparent, Math.Max(1, ui.OptionCornerRadius));
         if (selected)
-            Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value, SelectionLine(box), Accent * opacity);
-        DrawBossHead(FightPresets.BossType(index), new Rectangle(box.X + 9, box.Y + (compact ? 3 : 6), iconSize, iconSize),
-            opacity * (available ? 1f : .4f));
+            Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value, ArenaVoteGeometry.SelectionLine(box, ui), ui.AccentColor * opacity);
+        DrawBossHead(FightPresets.BossType(index),
+            new Rectangle(box.X + ui.BossIconXOffset, box.Y + (compact ? ui.CompactBossIconYOffset : ui.BossIconYOffset), iconSize, iconSize),
+            opacity * (available ? 1f : ui.UnavailableBossIconOpacity), ui.BossIconPadding, ui.BossIconScale, ui.BossIconColor);
         Text(Lang.GetNPCNameValue(FightPresets.BossType(index)), new Vector2(box.X + nameLeft, box.Y + titleY),
-            !available ? Color.Gray : selected ? Accent : Color.White, textScale, box.Width - nameLeft - 56, 0f);
-        Text(available ? vote.VoteCount(index).ToString() : "—", new Vector2(box.Right - 12, box.Y + titleY),
-            Accent, textScale, 32f, 1f);
-        if (!available && box.Height >= 68)
-            Text(Label("MapUnavailable"), new Vector2(box.X + 12, box.Y + 49), Color.Gray, .7f, box.Width - 24, 0f);
+            !available ? ui.UnavailableTextColor : selected ? ui.AccentColor : ui.TextColor, textScale, box.Width - nameLeft - ui.VoteTextReservedWidth, 0f);
+        Text(available ? vote.VoteCount(index).ToString() : "—",
+            new Vector2(box.Right - ui.VoteTextRightPadding, box.Y + titleY + ui.VoteTextYOffset),
+            ui.AccentColor, textScale * ui.VoteTextScaleMultiplier, ui.VoteTextWidth, 1f);
+        if (!available && box.Height >= ui.UnavailableTextMinimumHeight)
+            Text(Label("MapUnavailable"), new Vector2(box.X + ui.UnavailableTextXOffset, box.Y + ui.UnavailableTextYOffset),
+                ui.UnavailableTextColor, ui.UnavailableTextScale, box.Width - ui.UnavailableTextXOffset - ui.UnavailableTextRightPadding, 0f);
         if (!interactive || !box.Contains(mouse) || !Main.mouseLeft || !Main.mouseLeftRelease) return;
         Main.mouseLeftRelease = false;
         SoundEngine.PlaySound(SoundID.MenuTick);
@@ -197,33 +171,37 @@ internal static class BossVoteDrawer
     }
 
     private static void DrawVoterHeads(Rectangle box, IReadOnlyList<byte> voters, Point mouse,
-        Dictionary<int, Player> heads, MapHeadRenderer headRenderer, bool tooltips, float centered)
+        Dictionary<int, Player> heads, MapHeadRenderer headRenderer, bool tooltips, float centered, ArenaVoteUISettings ui)
     {
-        int size = VoterHeadSize(box);
+        int size = ArenaVoteGeometry.VoterHeadSize(box, ui);
         if (size == 0) return;
-        int capacity = Math.Max(1, (box.Width - 24) / size);
+        int gap = Math.Max(0, ui.VoterHeadGap), step = size + gap;
+        int capacity = Math.Max(1, (box.Width - ui.VoterHeadXPadding * 2 + gap) / step);
         int visible = Math.Min(voters.Count, voters.Count > capacity ? capacity - 1 : capacity);
         int cells = visible + (voters.Count > visible ? 1 : 0);
-        int left = (int)MathF.Round(MathHelper.Lerp(box.X + 12, box.Center.X - cells * size / 2, centered));
+        int left = (int)MathF.Round(MathHelper.Lerp(box.X + ui.VoterHeadXPadding,
+            box.Center.X - (cells * step - gap) / 2 + ui.CenteredVoterHeadsXOffset, centered));
         string NameOf(int id) => heads.TryGetValue(id, out Player player) ? player.name : "";
         for (int i = 0; i < visible; i++)
         {
             int id = voters[i];
-            Rectangle tile = new(left + i * size, box.Y + HeadsTop, size, size);
+            Rectangle tile = new(left + i * step, box.Y + ui.VoterHeadsTop, size, size);
             if (heads.TryGetValue(id, out Player player))
                 headRenderer.DrawPlayerHead(Main.Camera, player,
-                    tile.Center.ToVector2() - new Vector2(2f), opacity, size / 40f,
+                    tile.Center.ToVector2() + new Vector2(ui.VoterHeadXOffset, ui.VoterHeadYOffset), opacity, size / 40f * ui.VoterHeadScale,
                     Main.teamColor[Math.Clamp(player.team, 0, Main.teamColor.Length - 1)]);
             if (tooltips && tile.Contains(mouse)) Main.instance.MouseText(NameOf(id));
         }
         if (voters.Count <= visible) return;
-        Rectangle more = new(left + visible * size, box.Y + HeadsTop, size, size);
-        Text($"+{voters.Count - visible}", more.Center.ToVector2() - new Vector2(0f, 8f), Color.Silver, .72f, size);
+        Rectangle more = new(left + visible * step, box.Y + ui.VoterHeadsTop, size, size);
+        Text($"+{voters.Count - visible}",
+            more.Center.ToVector2() + new Vector2(ui.OverflowTextXOffset, ui.OverflowTextYOffset),
+            ui.OverflowTextColor, ui.OverflowTextScale, Math.Max(1, size - ui.OverflowTextWidthPadding * 2));
         if (tooltips && more.Contains(mouse))
             Main.instance.MouseText(string.Join(", ", voters.Skip(visible).Select(id => NameOf(id))));
     }
 
-    internal static void DrawBossHead(int type, Rectangle box, float opacity = 1f)
+    internal static void DrawBossHead(int type, Rectangle box, float opacity = 1f, float padding = 8f, float iconScale = 1f, Color? color = null)
     {
         int head = type >= 0 && type < NPCID.Sets.BossHeadTextures.Length
             ? NPCID.Sets.BossHeadTextures[type]
@@ -231,8 +209,8 @@ internal static class BossVoteDrawer
         if (head >= 0 && head < TextureAssets.NpcHeadBoss.Length)
         {
             Texture2D texture = TextureAssets.NpcHeadBoss[head].Value;
-            float scale = Math.Min((box.Width - 8f) / texture.Width, (box.Height - 8f) / texture.Height);
-            Main.spriteBatch.Draw(texture, box.Center.ToVector2(), null, Color.White * opacity, 0f,
+            float scale = Math.Max(0f, Math.Min((box.Width - padding) / texture.Width, (box.Height - padding) / texture.Height) * iconScale);
+            Main.spriteBatch.Draw(texture, box.Center.ToVector2(), null, (color ?? Color.White) * opacity, 0f,
                 texture.Size() / 2f, scale, SpriteEffects.None, 0f);
             return;
         }
@@ -243,8 +221,8 @@ internal static class BossVoteDrawer
         Main.instance.LoadNPC(type);
         Texture2D npc = TextureAssets.Npc[type].Value;
         Rectangle source = new(0, 0, npc.Width, npc.Height / Math.Max(1, Main.npcFrameCount[type]));
-        float fallbackScale = Math.Min((box.Width - 8f) / source.Width, (box.Height - 8f) / source.Height);
-        Main.spriteBatch.Draw(npc, box.Center.ToVector2(), source, Color.White * opacity, 0f,
+        float fallbackScale = Math.Max(0f, Math.Min((box.Width - padding) / source.Width, (box.Height - padding) / source.Height) * iconScale);
+        Main.spriteBatch.Draw(npc, box.Center.ToVector2(), source, (color ?? Color.White) * opacity, 0f,
             source.Size() / 2f, fallbackScale, SpriteEffects.None, 0f);
     }
 
@@ -257,10 +235,10 @@ internal static class BossVoteDrawer
             rectangle.Width, rectangle.Height, corner, corner, corner, corner, edge * opacity);
     }
 
-    private static void Header(string value, Vector2 position, float maxWidth, float maxScale)
+    private static void Header(string value, Vector2 position, float maxWidth, float maxScale, Color color)
     {
         float scale = Math.Min(maxScale, maxWidth / Math.Max(1f, FontAssets.DeathText.Value.MeasureString(value).X));
-        Utils.DrawBorderStringBig(Main.spriteBatch, value, position, Title * opacity, scale, .5f, 0f);
+        Utils.DrawBorderStringBig(Main.spriteBatch, value, position, color * opacity, scale, .5f, 0f);
     }
 
     private static void Text(string value, Vector2 position, Color color, float scale, float maxWidth, float anchor = .5f)

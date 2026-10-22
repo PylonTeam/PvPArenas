@@ -44,8 +44,8 @@ internal static class LoadoutPreviewDrawer
 
     private static BossFightPreset currentPreset;
 
-    private const int PreviewJumpDuration = 32;
-    private const float PreviewJumpHeight = 30f;
+    private static LoadoutUISettings drawSettings;
+    private static float Opacity => alpha * Math.Clamp(drawSettings.Opacity, 0f, 1f);
 
     private static Texture2D PanelBackground =>
         Main.Assets.Request<Texture2D>(
@@ -83,6 +83,7 @@ internal static class LoadoutPreviewDrawer
 
     internal static void Update(float seconds)
     {
+        LoadoutUISettings ui = LoadoutUILayout.Create();
         RoundManager manager = ModContent.GetInstance<RoundManager>();
         if (!manager.TryGetSelectedPreset(out BossFightPreset preset)) return;
         int count = preset.Loadouts?.Count ?? 0;
@@ -94,8 +95,8 @@ internal static class LoadoutPreviewDrawer
         }
 
         openingAge += Math.Max(0f, seconds);
-        alpha = ArenaUIStyle.Ease(Math.Clamp(openingAge / .2f, 0f, 1f));
-        float blend = ArenaUIStyle.HoverBlend(seconds);
+        alpha = ArenaUIStyle.Ease(Math.Clamp(openingAge / Math.Max(.001f, ui.OpeningDurationSeconds), 0f, 1f));
+        float blend = 1f - MathF.Exp(-Math.Max(0f, ui.HoverAnimationSpeed) * Math.Max(0f, seconds));
         int selected = NormalizeLoadoutIndex(preset, Main.LocalPlayer.GetModPlayer<ArenaPlayer>().SelectedLoadoutIndex);
         for (int i = 0; i < count; i++)
         {
@@ -140,8 +141,10 @@ internal static class LoadoutPreviewDrawer
         return layoutRows = MaximumGridRows(counts, preset.IsSandbox());
     }
 
-    public static void Draw(int top)
+    public static void Draw()
     {
+        drawSettings = LoadoutUILayout.Create();
+        int top = drawSettings.PanelTop;
         RoundManager manager =
             ModContent.GetInstance<RoundManager>();
 
@@ -155,7 +158,7 @@ internal static class LoadoutPreviewDrawer
         int optionCount = preset.Loadouts?.Count ?? 0;
         bool showSelector = optionCount > 1;
 
-        Point mouse = PlayerInput.IgnoreMouseInterface || alpha < .95f
+        Point mouse = PlayerInput.IgnoreMouseInterface || alpha < drawSettings.InputEnableOpacity
             ? new Point(int.MinValue, int.MinValue)
             : new Point(Main.mouseX, Main.mouseY);
         hoveredSlot = -1;
@@ -196,8 +199,10 @@ internal static class LoadoutPreviewDrawer
 
         int gridRows = GetGridRowCount(preset);
         // InterfaceScaleType.UI supplies logical screen/mouse coordinates, as it does for voting.
-        LoadoutPreviewLayout layout = Calculate(Main.screenWidth, Main.screenHeight, top,
-            optionCount, gridRows, (EquipKinds.Length + EquipmentRows - 1) / EquipmentRows);
+        LoadoutPreviewLayout layout = Calculate(new LoadoutPreviewArgs(
+            Width: Main.screenWidth, Height: Main.screenHeight, Top: top, OptionCount: optionCount,
+            InventoryRows: gridRows, EquipmentColumns: (EquipKinds.Length + EquipmentRows - 1) / EquipmentRows,
+            Settings: drawSettings));
         float scale = layout.Scale;
         int S(float value) => Math.Max(1, (int)MathF.Round(value * scale));
         Rectangle panel = layout.Panel;
@@ -227,46 +232,37 @@ internal static class LoadoutPreviewDrawer
         {
             DrawPanel(
                 panel,
-                ArenaUIStyle.PanelFill,
-                ArenaUIStyle.PanelEdge,
-                S(10));
+                drawSettings.PanelFillColor,
+                drawSettings.PanelBorderColor,
+                S(drawSettings.PanelCornerRadius));
 
             string title = Label("Header");
+            LoadoutTextPlacement titleText = LoadoutUIText.Centered(new(
+                Font: FontAssets.DeathText.Value, Text: title, Area: layout.TitleBox,
+                PreferredScale: drawSettings.LoadoutTitleTextScale * scale, Offset: Vector2.Zero,
+                Padding: 2f * scale));
             Utils.DrawBorderStringBig(
                 Main.spriteBatch,
                 title,
-                new Vector2(
-                    layout.TitleBox.Center.X,
-                    layout.TitleBox.Y),
-                ArenaUIStyle.Title * alpha,
-                Math.Min(TitleScale * scale, layout.TitleBox.Width / Math.Max(1f, FontAssets.DeathText.Value.MeasureString(title).X)),
-                .5f,
-                0f);
-
-            string bossName =
-                preset.IsSandbox()
-                    ? Label("Sandbox")
-                    : Lang.GetNPCNameValue(
-                        preset.Boss?.Type ?? NPCID.None);
-
-            Text(
-                bossName,
-                new Vector2(
-                    layout.BossNameBox.X,
-                    layout.BossNameBox.Y),
-                Color.White,
-                BossNameScale * scale,
-                layout.BossNameBox.Width, 0f);
+                titleText.Position,
+                drawSettings.TitleColor * Opacity,
+                titleText.Scale);
 
             int seconds = Math.Max(0, (manager.RemainingTicks + 59) / 60);
-            Text($"{seconds / 60}:{seconds % 60:00}", new Vector2(layout.TimerBox.Right, layout.TimerBox.Y),
-                Color.Silver, TimerScale * scale, layout.TimerBox.Width, 1f);
+            string timer = $"{seconds / 60}:{seconds % 60:00}";
+            LoadoutTextPlacement timerText = LoadoutUIText.Centered(new(
+                Font: FontAssets.MouseText.Value, Text: timer, Area: layout.TimerBox,
+                PreferredScale: drawSettings.TimerTextScale * scale,
+                Offset: new Vector2(0, drawSettings.TimerTextYOffset * scale), Padding: 2f * scale));
+            Utils.DrawBorderString(Main.spriteBatch, timer, timerText.Position,
+                drawSettings.TimerTextColor * Opacity, timerText.Scale);
             Rectangle track = layout.ProgressBox;
             float progress = Math.Clamp(manager.RemainingTicks /
                 (60f * Math.Max(1, ModContent.GetInstance<ServerConfig>().FreezeCountdownSeconds)), 0f, 1f);
-            Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value, track, Color.Black * (.3f * alpha));
+            Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value, track,
+                Color.Black * (Math.Clamp(drawSettings.ProgressTrackOpacity, 0f, 1f) * Opacity));
             Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value,
-                new Rectangle(track.X, track.Y, (int)(track.Width * progress), track.Height), ArenaUIStyle.Progress * alpha);
+                new Rectangle(track.X, track.Y, (int)(track.Width * progress), track.Height), drawSettings.ProgressColor * Opacity);
 
             if (!PlayerInput.IgnoreMouseInterface && panel.Contains(Main.mouseX, Main.mouseY))
                 Main.LocalPlayer.mouseInterface = true;
@@ -307,141 +303,13 @@ internal static class LoadoutPreviewDrawer
         }
     }
 
-    private static int GetDesignWidth(
-        int equipmentColumns)
-    {
-        return SidePadding * 2
-            + PreviewWidth
-            + PreviewInventoryGap
-            + InventoryColumns * SlotStep
-            + (equipmentColumns > 0
-                ? InventoryEquipmentGap
-                    + equipmentColumns * SlotStep
-                : 0);
-    }
-
-    private static int GetDesignHeight(
-        int optionCount,
-        int inventoryRows)
-    {
-        return HeaderHeight
-            + GetLoadoutSelectorHeight(optionCount)
-            + inventoryRows * SlotStep
-            + SidePadding;
-    }
-
-    private static float CalculateScale(
-        int top,
-        int designWidth,
-        int designHeight)
-    {
-        return Math.Min(
-            1f,
-            Math.Min(
-                (Main.screenWidth - 12f)
-                    / designWidth,
-                (Main.screenHeight - top - 2f)
-                    / designHeight));
-    }
-
-    private static int GetLoadoutSelectorRows(
-        int optionCount)
-    {
-        if (optionCount <= 1)
-            return 0;
-
-        return (
-            optionCount
-            + MaxLoadoutColumns
-            - 1)
-            / MaxLoadoutColumns;
-    }
-
-    private static int GetLoadoutSelectorHeight(
-        int optionCount)
-    {
-        int rows =
-            GetLoadoutSelectorRows(optionCount);
-
-        if (rows == 0)
-            return 0;
-
-        return rows * LoadoutCardHeight
-            + (rows - 1) * CardGap
-            + LoadoutSelectorBottomPadding;
-    }
-
-    private static Rectangle GetLoadoutCardRectangle(
-        Rectangle panel,
-        int top,
-        int optionCount,
-        int index,
-        Func<float, int> S)
-    {
-        int columns =
-            Math.Min(
-                MaxLoadoutColumns,
-                optionCount);
-
-        int gap = S(CardGap);
-        int side = S(SidePadding);
-        int cardHeight = S(LoadoutCardHeight);
-
-        int availableWidth =
-            panel.Width
-            - side * 2
-            - gap * (columns - 1);
-
-        int cardWidth = Math.Min(
-            availableWidth / columns,
-            S(LoadoutCardMaxWidth));
-
-        int row = index / columns;
-        int column = index % columns;
-
-        int firstIndexInRow =
-            row * columns;
-
-        int optionsInRow =
-            Math.Min(
-                columns,
-                optionCount - firstIndexInRow);
-
-        int rowWidth =
-            optionsInRow * cardWidth
-            + (optionsInRow - 1) * gap;
-
-        int rowX =
-            panel.Center.X - rowWidth / 2;
-
-        return new Rectangle(
-            rowX + column * (cardWidth + gap),
-            top + row * (cardHeight + gap),
-            cardWidth,
-            cardHeight);
-    }
-
     private static int GetHoveredLoadoutIndex(
-        BossFightPreset preset,
-        Rectangle panel,
-        int top,
-        Func<float, int> S,
+        LoadoutPreviewLayout layout,
         Point mouse)
     {
-        int optionCount =
-            preset.Loadouts?.Count ?? 0;
-
-        for (int i = 0; i < optionCount; i++)
+        for (int i = 0; i < layout.OptionCount; i++)
         {
-            Rectangle card =
-                GetLoadoutCardRectangle(
-                    panel,
-                    top,
-                    optionCount,
-                    i,
-                    S);
-
-            if (card.Contains(mouse))
+            if (Card(layout, i).Bounds.Contains(mouse))
                 return i;
         }
 
@@ -450,8 +318,7 @@ internal static class LoadoutPreviewDrawer
 
     private static void DrawLoadoutCards(
         BossFightPreset preset,
-        Rectangle panel,
-        int top,
+        LoadoutPreviewLayout layout,
         Func<float, int> S,
         float scale,
         Point mouse)
@@ -464,13 +331,8 @@ internal static class LoadoutPreviewDrawer
             ArenaLoadoutOption option =
                 preset.Loadouts[i];
 
-            Rectangle card =
-                GetLoadoutCardRectangle(
-                    panel,
-                    top,
-                    optionCount,
-                    i,
-                    S);
+            LoadoutPreviewCard regions = Card(layout, i);
+            Rectangle card = regions.Bounds;
 
             bool hovered =
                 hoveredLoadoutIndex == i;
@@ -480,10 +342,11 @@ internal static class LoadoutPreviewDrawer
 
             float hover = i < hoverAmounts.Length ? hoverAmounts[i] : 0f;
             float selection = i < selectionAmounts.Length ? selectionAmounts[i] : selected ? 1f : 0f;
-            DrawPanel(card, ArenaUIStyle.ChoiceFill(hover, selection), Color.Transparent, S(8));
+            DrawPanel(card, LoadoutUILayout.ChoiceFill(drawSettings, hover, selection), Color.Transparent,
+                S(drawSettings.LoadoutPanelOptionCornerRadius));
             Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value,
-                new Rectangle(card.X + S(10), card.Bottom - S(5), card.Width - S(20), S(2)),
-                ArenaUIStyle.Accent * (selection * alpha));
+                regions.SelectionLine,
+                drawSettings.AccentColor * (selection * Opacity));
 
             if (hovered)
             {
@@ -504,11 +367,7 @@ internal static class LoadoutPreviewDrawer
                 }
             }
 
-            Rectangle iconBox = new(
-                card.Center.X - S(16),
-                card.Y + S(5),
-                S(32),
-                S(32));
+            Rectangle iconBox = regions.IconBox;
 
             Item icon =
                 MakeItem(GetLoadoutIconType(option));
@@ -520,9 +379,9 @@ internal static class LoadoutPreviewDrawer
                     31,
                     Main.spriteBatch,
                     iconBox.Center.ToVector2(),
-                    scale,
-                    iconBox.Width - S(6),
-                    Color.White * alpha);
+                    Math.Max(0, drawSettings.LoadoutPanelOptionIconScale) * scale,
+                    Math.Max(1, iconBox.Width - S(drawSettings.LoadoutPanelOptionIconPadding)),
+                    Color.White * (Opacity * Math.Clamp(drawSettings.ItemOpacity, 0f, 1f)));
             }
 
             string name =
@@ -530,16 +389,16 @@ internal static class LoadoutPreviewDrawer
                     ? Language.GetTextValue("Mods.PvPArenas.LoadoutSelector.UnnamedLoadout", i + 1)
                     : option.Name;
 
-            Color nameColor = Color.Lerp(Color.White, ArenaUIStyle.Accent, selection);
+            Color nameColor = Color.Lerp(drawSettings.TextColor, drawSettings.AccentColor, selection);
 
             Text(
-                name,
+                CardName(name),
                 new Vector2(
-                    card.Center.X,
-                    card.Y + S(39)),
+                    regions.NameBox.Center.X,
+                    regions.NameBox.Y),
                 nameColor,
-                .78f * scale,
-                card.Width - S(8));
+                drawSettings.LoadoutPanelOptionTextScale * scale,
+                regions.NameBox.Width);
         }
     }
 
@@ -798,13 +657,15 @@ internal static class LoadoutPreviewDrawer
     }
 
     private static void DrawPreviewBox(
-        Rectangle box,
+        LoadoutPreviewLayout layout,
         Point mouse)
     {
+        Rectangle box = layout.PortraitBox;
         SpriteBatch spriteBatch =
             Main.spriteBatch;
 
-        DrawPanel(box, ArenaUIStyle.CardFill, Color.Transparent, 8);
+        DrawPanel(box, drawSettings.CardFillColor, Color.Transparent,
+            Math.Max(1, (int)MathF.Round(drawSettings.PlayerPreviewCornerRadius * layout.Scale)));
 
         if (previewPlayer == null)
             return;
@@ -814,33 +675,42 @@ internal static class LoadoutPreviewDrawer
         if (hovered)
             Main.LocalPlayer.mouseInterface = true;
 
+        float drawScale = PortraitScale(layout);
         Vector2 drawPosition =
             Main.screenPosition
             + new Vector2(
                 box.Center.X
-                    - previewPlayer.width / 2f,
-                box.Center.Y
-                    - previewPlayer.height / 2f);
+                    - previewPlayer.width * drawScale / 2f,
+                box.Bottom
+                    - previewPlayer.height * drawScale - drawSettings.PlayerPreviewBottomPadding * layout.Scale);
 
         previewPlayer.velocity = Vector2.Zero;
         previewPlayer.active = true;
         previewPlayer.dead = false;
         previewPlayer.ghost = false;
         previewPlayer.isDisplayDollOrInanimate = true;
+        previewPlayer.immuneAlpha = (int)MathF.Round((1f - Opacity) * 255f);
 
         float jumpOffset =
             ApplyPreviewAnimation(hovered);
 
-        drawPosition.Y -= jumpOffset;
+        drawPosition.Y -= jumpOffset * drawScale;
         previewPlayer.position = drawPosition;
 
         bool wasMenu = Main.gameMenu;
-
-        UISpriteBatchHelper.Restart(
-            spriteBatch,
-            BlendState.AlphaBlend,
-            SamplerState.PointClamp,
-            sortMode: SpriteSortMode.Immediate);
+        GraphicsDevice device = spriteBatch.GraphicsDevice;
+        Rectangle oldClip = device.ScissorRectangle;
+        RasterizerState oldRasterizer = device.RasterizerState;
+        BlendState oldBlend = device.BlendState;
+        SamplerState oldSampler = device.SamplerStates[0];
+        Vector2 first = Vector2.Transform(box.TopLeft(), Main.UIScaleMatrix);
+        Vector2 last = Vector2.Transform(box.BottomRight(), Main.UIScaleMatrix);
+        Rectangle portraitClip = new((int)first.X, (int)first.Y,
+            Math.Max(1, (int)(last.X - first.X)), Math.Max(1, (int)(last.Y - first.Y)));
+        spriteBatch.End();
+        spriteBatch.Begin(SpriteSortMode.Immediate, BlendState.AlphaBlend, SamplerState.PointClamp,
+            DepthStencilState.None, ClipRasterizer, null, Main.UIScaleMatrix);
+        device.ScissorRectangle = Rectangle.Intersect(oldClip, portraitClip);
 
         try
         {
@@ -860,18 +730,17 @@ internal static class LoadoutPreviewDrawer
                     0f,
                     Vector2.Zero,
                     0f,
-                    1f);
+                    drawScale);
             }
         }
         finally
         {
             Main.gameMenu = wasMenu;
 
-            UISpriteBatchHelper.Restart(
-                spriteBatch,
-                BlendState.AlphaBlend,
-                SamplerState.LinearClamp,
-                sortMode: SpriteSortMode.Deferred);
+            spriteBatch.End();
+            spriteBatch.Begin(SpriteSortMode.Deferred, oldBlend, oldSampler,
+                DepthStencilState.None, oldRasterizer, null, Main.UIScaleMatrix);
+            device.ScissorRectangle = oldClip;
         }
     }
 
@@ -903,15 +772,16 @@ internal static class LoadoutPreviewDrawer
             previewJumpTicks <= 0)
         {
             previewJumpTicks =
-                PreviewJumpDuration;
+                Math.Max(1, drawSettings.PlayerJumpDuration);
         }
 
         if (previewJumpTicks > 0)
         {
+            previewJumpTicks = Math.Min(previewJumpTicks, Math.Max(1, drawSettings.PlayerJumpDuration));
             float progress =
                 1f
                 - previewJumpTicks
-                / (float)PreviewJumpDuration;
+                / Math.Max(1f, drawSettings.PlayerJumpDuration);
 
             previewJumpTicks--;
 
@@ -919,7 +789,7 @@ internal static class LoadoutPreviewDrawer
 
             return MathF.Sin(
                 progress * MathF.PI)
-                * PreviewJumpHeight;
+                * drawSettings.PlayerJumpHeight;
         }
 
         if (!hovered)
@@ -932,7 +802,7 @@ internal static class LoadoutPreviewDrawer
             7
             + (int)(
                 Main.GameUpdateCount
-                / 5UL
+                / (ulong)Math.Max(1, drawSettings.PlayerWalkFrameTicks)
                 % 13UL);
 
         SetPreviewBodyFrame(frame);
@@ -957,69 +827,38 @@ internal static class LoadoutPreviewDrawer
     #endregion
 
     private static void DrawInventorySlots(
-        int originX,
-        int originY,
-        float scale,
-        Point mouse,
-        Func<float, int> S)
+        LoadoutPreviewLayout layout,
+        Point mouse)
     {
         for (int i = 0;
              i < inventorySlots.Count;
              i++)
         {
-            int column =
-                i % InventoryColumns;
-
-            int row =
-                i / InventoryColumns;
-
-            Rectangle cell = new(
-                originX
-                    + column * S(SlotStep),
-                originY
-                    + row * S(SlotStep),
-                S(SlotSize),
-                S(SlotSize));
+            Rectangle cell = InventorySlot(layout, i);
 
             DrawSlot(
                 cell,
                 inventorySlots[i],
-                scale,
+                layout.Scale,
                 mouse,
                 i);
         }
     }
 
     private static void DrawEquipmentSlots(
-        int originX,
-        int originY,
-        int rowCount,
-        float scale,
-        Point mouse,
-        Func<float, int> S)
+        LoadoutPreviewLayout layout,
+        Point mouse)
     {
         for (int i = 0;
              i < equipmentSlots.Count;
              i++)
         {
-            int column =
-                i / rowCount;
-
-            int row =
-                i % rowCount;
-
-            Rectangle cell = new(
-                originX
-                    + column * S(SlotStep),
-                originY
-                    + row * S(SlotStep),
-                S(SlotSize),
-                S(SlotSize));
+            Rectangle cell = EquipmentSlot(layout, i);
 
             DrawSlot(
                 cell,
                 equipmentSlots[i],
-                scale,
+                layout.Scale,
                 mouse,
                 EquipmentSlotKeyOffset + i);
         }
@@ -1033,18 +872,21 @@ internal static class LoadoutPreviewDrawer
         int slotKey)
     {
         int hoverKey = slotKey >= EquipmentSlotKeyOffset ? LoadoutSlotLayout.SlotCount + slotKey - EquipmentSlotKeyOffset : slotKey;
+        bool equipment = entry.Equip;
+        int corner = equipment ? drawSettings.EquipmentSlotCornerRadius : drawSettings.InventorySlotCornerRadius;
         if (cell.Contains(mouse)) hoveredSlot = hoverKey;
-        DrawPanel(cell, ArenaUIStyle.ChoiceFill(slotHoverAmounts[hoverKey], 0f), Color.Transparent,
-            Math.Max(2, (int)MathF.Round(6f * uiScale)));
+        DrawPanel(cell, LoadoutUILayout.ChoiceFill(drawSettings, slotHoverAmounts[hoverKey], 0f), Color.Transparent,
+            Math.Max(1, (int)MathF.Round(corner * uiScale)));
 
         if (!entry.Item.IsAir)
         {
+            float itemScale = equipment ? drawSettings.EquipmentItemScale : drawSettings.InventoryItemScale;
+            int padding = equipment ? drawSettings.EquipmentItemPadding : drawSettings.InventoryItemPadding;
             ItemSlot.DrawItemIcon(entry.Item, 31, Main.spriteBatch,
-                cell.Center.ToVector2(), uiScale * .85f, cell.Width - 8f, Color.White * alpha);
+                cell.Center.ToVector2(), uiScale * Math.Max(0f, itemScale),
+                Math.Max(1f, cell.Width - Math.Max(0, padding) * uiScale),
+                Color.White * (Opacity * Math.Clamp(drawSettings.ItemOpacity, 0f, 1f)));
         }
-
-        float textScale =
-            .62f * Math.Max(.75f, uiScale);
 
         if (entry.HotbarNumber.HasValue)
         {
@@ -1054,29 +896,32 @@ internal static class LoadoutPreviewDrawer
                     : entry.HotbarNumber.Value
                         .ToString();
 
+            Rectangle area = SlotLabelBox(cell, false, drawSettings, uiScale);
+            float textScale = TextScale(FontAssets.MouseText.Value.MeasureString(number), area,
+                drawSettings.InventoryHotbarTextScale * uiScale);
             Utils.DrawBorderString(
                 Main.spriteBatch,
                 number,
                 new Vector2(
-                    cell.X + 4,
-                    cell.Y + 2),
-                Color.White * alpha,
+                    area.X,
+                    area.Y),
+                drawSettings.TextColor * Opacity,
                 textScale);
         }
 
         if (entry.Item.stack > 1)
         {
+            string stack = entry.Item.stack.ToString();
+            Rectangle area = SlotLabelBox(cell, true, drawSettings, uiScale);
+            Vector2 measured = FontAssets.MouseText.Value.MeasureString(stack);
+            float textScale = TextScale(measured, area, drawSettings.InventoryStackTextScale * uiScale);
             Utils.DrawBorderString(
                 Main.spriteBatch,
-                entry.Item.stack.ToString(),
+                stack,
                 new Vector2(
-                    cell.X + 5,
-                    cell.Bottom
-                        - 16f
-                        * Math.Max(
-                            .75f,
-                            uiScale)),
-                Color.White * alpha,
+                    area.X,
+                    area.Bottom - measured.Y * textScale),
+                drawSettings.TextColor * Opacity,
                 textScale);
         }
 
@@ -1102,77 +947,49 @@ internal static class LoadoutPreviewDrawer
 
     }
 
-    // Max life / max mana of the shown loadout, drawn as a small icon + number strip
-    // across the bottom of the preview portrait.
+    // The stats strip has its own region below the animated portrait.
     private static void DrawLoadoutStats(
-        Rectangle previewBox,
-        float scale,
+        LoadoutPreviewLayout layout,
         Func<float, int> S)
     {
-        int height = S(20);
-        Rectangle strip = new(
-            previewBox.X + S(3),
-            previewBox.Bottom - height - S(3),
-            previewBox.Width - S(6),
-            height);
+        DrawPanel(layout.StatsBox, drawSettings.CardFillColor, Color.Transparent, S(drawSettings.HealthManaCornerRadius));
 
-        Main.spriteBatch.Draw(
-            TextureAssets.MagicPixel.Value,
-            strip,
-            ArenaUIStyle.PanelFill * (.85f * alpha));
-
-        int half = strip.Width / 2;
         DrawStat(
             TextureAssets.Heart.Value,
-            cachedMaxHealth,
-            new Rectangle(strip.X, strip.Y, half, strip.Height),
-            scale,
-            S);
+            new LoadoutStatTextArgs(FontAssets.MouseText.Value, cachedMaxHealth.ToString(), Stat(layout, 0),
+                TextureAssets.Heart.Value.Size(), drawSettings.HealthIconSize, drawSettings.HealthTextScale,
+                layout.Scale, drawSettings));
 
         DrawStat(
             TextureAssets.Mana.Value,
-            cachedMaxMana,
-            new Rectangle(strip.X + half, strip.Y, strip.Width - half, strip.Height),
-            scale,
-            S);
+            new LoadoutStatTextArgs(FontAssets.MouseText.Value, cachedMaxMana.ToString(), Stat(layout, 1),
+                TextureAssets.Mana.Value.Size(), drawSettings.ManaIconSize, drawSettings.ManaTextScale,
+                layout.Scale, drawSettings));
     }
 
     private static void DrawStat(
         Texture2D icon,
-        int value,
-        Rectangle area,
-        float scale,
-        Func<float, int> S)
+        LoadoutStatTextArgs args)
     {
-        float iconScale = (area.Height - S(4)) / (float)icon.Height;
-        float iconWidth = icon.Width * iconScale;
-        string text = value.ToString();
-        float textScale = .7f * scale;
-        Vector2 textSize =
-            FontAssets.MouseText.Value.MeasureString(text) * textScale;
-        float gap = S(3);
-        float startX =
-            area.Center.X - (iconWidth + gap + textSize.X) / 2f;
+        LoadoutStatPlacement placement = LoadoutUIText.Stat(args);
 
         Main.spriteBatch.Draw(
             icon,
-            new Vector2(startX + iconWidth / 2f, area.Center.Y),
+            placement.IconCenter,
             null,
-            Color.White * alpha,
+            Color.White * Opacity,
             0f,
             icon.Size() / 2f,
-            iconScale,
+            placement.IconScale,
             SpriteEffects.None,
             0f);
 
         Utils.DrawBorderString(
             Main.spriteBatch,
-            text,
-            new Vector2(
-                startX + iconWidth + gap,
-                area.Center.Y - textSize.Y / 2f),
-            Color.White * alpha,
-            textScale);
+            args.Text,
+            placement.TextPosition,
+            drawSettings.TextColor * Opacity,
+            placement.TextScale);
     }
 
     private static void DrawPanel(
@@ -1192,7 +1009,7 @@ internal static class LoadoutPreviewDrawer
             corner,
             corner,
             corner,
-            fill * alpha);
+            fill * Opacity);
 
         Utils.DrawSplicedPanel(
             Main.spriteBatch,
@@ -1205,7 +1022,7 @@ internal static class LoadoutPreviewDrawer
             corner,
             corner,
             corner,
-            edge * alpha);
+            edge * Opacity);
     }
 
     private static void Text(
@@ -1228,7 +1045,7 @@ internal static class LoadoutPreviewDrawer
             Main.spriteBatch,
             value,
             position,
-            color * alpha,
+            color * Opacity,
             scale,
             anchor);
     }
