@@ -184,6 +184,12 @@ internal sealed class RoundManager : GameEvent
 
         TeamBalancer.AssignUnassignedPlayers();
 
+        // Reuse the synchronized clock so the final vote leaves one second before the summary.
+        // Only shorten it; later votes and joins must not restart the closing second.
+        if (IsVoting && ModContent.GetInstance<BossVoteSystem>().AllPlayersVoted
+            && RemainingTicks > TicksPerSecond)
+            GameSession.Instance.SetClock(this, TicksPerSecond);
+
         if (currentPhase == RoundPhase.Generating)
         {
             AdvancePreparation();
