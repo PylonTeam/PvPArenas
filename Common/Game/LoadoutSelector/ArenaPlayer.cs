@@ -20,10 +20,12 @@ internal sealed class ArenaPlayer : ModPlayer
     private bool arenaSpawnActive;
     private bool generationStaged;
     private bool suppressArenaSpawn;
+    private bool betweenRoundsBuffsCleared;
 
     internal int SelectedLoadoutIndex;
     private ArenaLoadoutDelivery delivery;
     internal ArenaLoadoutDelivery Delivery => delivery ??= new(Player);
+    internal bool HasRoundLoadout => roundPrepared;
     internal bool AwaitingLoadoutDelivery => !roundPrepared || Delivery.AwaitingGrant;
 
     public override void Initialize() => delivery = new(Player);
@@ -57,9 +59,11 @@ internal sealed class ArenaPlayer : ModPlayer
     {
         roundPrepared = false;
         arenaSpawnActive = false;
+        betweenRoundsBuffsCleared = false;
         delivery = new(Player);
         if (!ModContent.GetInstance<RoundManager>().IsActive)
             return;
+        ArenaRoundBuffs.Clear(Player);
         RoundManager.RoundPhase phase = ModContent.GetInstance<RoundManager>().CurrentPhase;
         if (phase is RoundManager.RoundPhase.WaitingForPlayers
             or RoundManager.RoundPhase.VotingOrEndScreen)
@@ -106,6 +110,12 @@ internal sealed class ArenaPlayer : ModPlayer
     public override void PreUpdate()
     {
         RoundManager manager = ModContent.GetInstance<RoundManager>();
+        bool betweenRounds = manager.IsActive
+            && manager.CurrentPhase is RoundManager.RoundPhase.WaitingForPlayers or RoundManager.RoundPhase.VotingOrEndScreen;
+        if (betweenRounds && !betweenRoundsBuffsCleared)
+            ArenaRoundBuffs.Clear(Player);
+        betweenRoundsBuffsCleared = betweenRounds;
+
         // Vanilla ghosts return before PostUpdate, so release their transient handoff here.
         if (!manager.IsActive || !ArenaRespawns.IsInitialParticipant(Player)
             || manager.CurrentPhase is RoundManager.RoundPhase.WaitingForPlayers or RoundManager.RoundPhase.VotingOrEndScreen)
@@ -193,6 +203,7 @@ internal sealed class ArenaPlayer : ModPlayer
                 {
                     if (Player.whoAmI == Main.myPlayer && preset.IsSandbox())
                     {
+                        ArenaRoundBuffs.Clear(Player);
                         ApplyLoadout(Player, preset);
                         roundPrepared = true;
                     }
@@ -260,6 +271,7 @@ internal sealed class ArenaPlayer : ModPlayer
         arenaPlayer.Revive();
         arenaPlayer.ResetBossDamage();
         ScoreboardService.ResetPlayer(player);
+        arenaPlayer.Delivery.BeginRound();
         ApplyLoadout(player, preset);
         Teleport(player, spawn);
         arenaPlayer.roundPrepared = true;
@@ -287,6 +299,7 @@ internal sealed class ArenaPlayer : ModPlayer
             arenaPlayer.SelectedLoadoutIndex = 0;
             arenaPlayer.ResetArenaSpawn();
             ClearCarriedItems(player, sync: Main.netMode == NetmodeID.Server);
+            ArenaRoundBuffs.Clear(player);
             if (player.hostile && (Team)player.team is Team.Red or Team.Blue)
             {
                 player.hostile = false;

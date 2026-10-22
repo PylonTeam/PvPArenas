@@ -17,6 +17,7 @@ internal sealed class ArenaLoadoutDelivery
     private int revision, requestedBoss, requestedIndex;
     private int[] preferences;
     private bool requestingPreferences, requestSent, awaitingAcknowledgement;
+    private bool resetBuffsOnGrant;
     private long requestedAt;
     private int receivedRevision;
     private object ownerSocket;
@@ -26,12 +27,19 @@ internal sealed class ArenaLoadoutDelivery
 
     internal ArenaLoadoutDelivery(Player owner) => this.owner = owner;
 
+    internal void BeginRound()
+    {
+        ArenaRoundBuffs.Clear(owner);
+        resetBuffsOnGrant = true;
+    }
+
     internal void Reset()
     {
         if (requestedBoss != 0 || Pending) revision++;
         requestedBoss = 0;
         preferences = null;
         requestingPreferences = requestSent = awaitingAcknowledgement = false;
+        resetBuffsOnGrant = false;
     }
 
     internal static bool RequestPreferences(Player player, BossFightPreset preset)
@@ -97,7 +105,11 @@ internal sealed class ArenaLoadoutDelivery
         PlayerLoadouts.Synchronize(player);
         NetMessage.SendData(MessageID.PlayerLifeMana, number: player.whoAmI);
         NetMessage.SendData(MessageID.PlayerMana, number: player.whoAmI);
-        if (!awaitingAcknowledgement) return;
+        if (!awaitingAcknowledgement)
+        {
+            resetBuffsOnGrant = false;
+            return;
+        }
         ModPacket packet = ModContent.GetInstance<PvPArenas>().GetPacket();
         packet.Write((byte)PvPArenas.PacketType.LoadoutApplied);
         packet.Write(preset.Boss.Type);
@@ -105,9 +117,11 @@ internal sealed class ArenaLoadoutDelivery
         packet.Write(revision);
         packet.Write(player.statLife);
         packet.Write(player.statMana);
+        packet.Write(resetBuffsOnGrant);
         // An owner's vanilla equipment packets are ignored when global SSC is off.
         CarriedItemSnapshot.Write(packet, player);
         packet.Send(player.whoAmI);
+        resetBuffsOnGrant = false;
     }
 
     internal static void HandleRequest(BinaryReader reader)
@@ -168,6 +182,7 @@ internal sealed class ArenaLoadoutDelivery
     {
         int boss = reader.ReadInt32(), index = reader.ReadInt32(), revision = reader.ReadInt32();
         int life = reader.ReadInt32(), mana = reader.ReadInt32();
+        bool resetBuffs = reader.ReadBoolean();
         Player player = Main.LocalPlayer;
         CarriedItemSnapshot snapshot = CarriedItemSnapshot.Read(reader, player);
         RoundManager manager = ModContent.GetInstance<RoundManager>();
@@ -180,6 +195,11 @@ internal sealed class ArenaLoadoutDelivery
         ArenaLoadoutDelivery delivery = owner.Delivery;
         if (revision <= delivery.receivedRevision) return;
         LocalInventoryPositions.Stop();
+        if (resetBuffs)
+        {
+            ArenaRoundBuffs.Clear(player);
+            if (Main.clientPlayer != null) ArenaRoundBuffs.Clear(Main.clientPlayer);
+        }
         snapshot.Apply(player);
         if (Main.clientPlayer != null) snapshot.Apply(Main.clientPlayer);
         Main.mouseItem = player.inventory[58].Clone();
