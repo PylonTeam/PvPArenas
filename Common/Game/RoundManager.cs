@@ -5,6 +5,7 @@ using PvPArenas.Common.Game.TeamBalancing;
 using PvPArenas.Common.Generation;
 using PvPArenas.Common.AdminTools.WorldGenManager;
 using PvPArenas.Core.Configs;
+using PvPArenas.Core.Compat;
 using PvPFramework.Common.EndScreen;
 using PvPFramework.Common.Game;
 using System.Collections.Generic;
@@ -80,7 +81,10 @@ internal sealed class RoundManager : GameEvent
         && (Team)Main.LocalPlayer.team is not (Team.Red or Team.Blue);
     public override int TimerSidePadding => ChooseTeam ? 56 : 16;
     public override string TimerTooltip => string.IsNullOrEmpty(PreparationFailure)
-        ? "Arenas round status" : Language.GetTextValue("Mods.PvPArenas.Round.PreparationFailed", PreparationFailure);
+        ? "Arenas round status" : Language.GetTextValue(
+            ErkySSCCompat.IsAdmin(Main.myPlayer, out _)
+                ? "Mods.PvPArenas.Round.PreparationFailedAdmin"
+                : "Mods.PvPArenas.Round.PreparationFailed", PreparationFailure);
     public override void DrawTimerDecoration(Rectangle panel, float opacity) => ScorelineUISystem.DrawTimerDecoration(this, panel, opacity);
     public override string TimerText => !IsActive ? null : ChooseTeam ? "Choose your team" : CurrentPhase switch
     {
@@ -88,10 +92,13 @@ internal sealed class RoundManager : GameEvent
             => Language.GetTextValue("Mods.PvPArenas.Round.PreparationFailedStatus"),
         RoundPhase.WaitingForPlayers => IsIdleHeld ? "Waiting" : "Waiting for players",
         RoundPhase.VotingOrEndScreen when IsShowingResults => $"Results {GameTimerUISystem.FormatTime(RemainingTicks)}",
-        RoundPhase.VotingOrEndScreen when IsVoting => $"Boss vote {GameTimerUISystem.FormatTime(RemainingTicks)}",
-        RoundPhase.VotingOrEndScreen => $"Next round {GameTimerUISystem.FormatTime(RemainingTicks)}",
-        RoundPhase.Generating => SelectedBossType == NPCID.Plantera ? "Generating jungle" : "Preparing arena",
-        RoundPhase.FreezeCountdown => $"Starting {Math.Max(1, (int)Math.Ceiling(RemainingTicks / 60d))}",
+        RoundPhase.VotingOrEndScreen when IsVoting => Language.GetTextValue(
+            "Mods.PvPArenas.Round.VotingStatus", GameTimerUISystem.FormatTime(RemainingTicks)),
+        RoundPhase.VotingOrEndScreen => Language.GetTextValue(
+            "Mods.PvPArenas.Round.NextArenaStatus", GameTimerUISystem.FormatTime(RemainingTicks)),
+        RoundPhase.Generating => SelectedBossType == NPCID.Plantera ? "Generating jungle"
+            : SelectedBossType == NPCID.CultistBoss ? "Generating dungeon" : "Preparing arena",
+        RoundPhase.FreezeCountdown => $"Starting {GameTimerUISystem.FormatTime(RemainingTicks)}",
         RoundPhase.Playing => GameTimerUISystem.FormatTime(RemainingTicks),
         _ => "Arenas"
     };
@@ -148,7 +155,7 @@ internal sealed class RoundManager : GameEvent
     {
         OnDeselected();
         idleHeld = true;
-        preparationFailure = "The event stopped after an unexpected error. Use Start round to retry.";
+        preparationFailure = "The event stopped after an unexpected error. Use Start round in Game Manager to retry.";
         ArenaSpawnBoxIntegration.UpdateMatchState();
         if (IsActive)
             UpdateFreezeTime(true);
@@ -516,14 +523,21 @@ internal sealed class RoundManager : GameEvent
         currentLayout = null;
         showingResults = false;
         idleHeld = true;
-        Log.Warn($"[M2-Prepare] {failure} Holding the selected boss until setup is retried.");
+        Log.Warn($"[M2-Prepare] {failure} Holding the selected arena until setup is retried. "
+            + "Fix the issue, then use Start round in Game Manager to retry, or Start voting to choose again.");
         SetPhase(RoundPhase.WaitingForPlayers, 0);
 
         const string key = "Mods.PvPArenas.Round.PreparationFailed";
         if (Main.netMode == NetmodeID.Server)
-            ChatHelper.BroadcastChatMessage(NetworkText.FromKey(key, failure), Color.OrangeRed);
+        {
+            ChatHelper.BroadcastChatMessage(NetworkText.FromKey(key), Color.OrangeRed);
+            foreach (Player player in Main.player)
+                if (player?.active == true && ErkySSCCompat.IsAdmin(player.whoAmI, out _))
+                    ChatHelper.SendChatMessageToClient(NetworkText.FromKey(
+                        "Mods.PvPArenas.Round.PreparationFailedAdmin", failure), Color.OrangeRed, player.whoAmI);
+        }
         else if (!Main.dedServ)
-            Main.NewText(Language.GetTextValue(key, failure), Color.OrangeRed);
+            Main.NewText(Language.GetTextValue("Mods.PvPArenas.Round.PreparationFailedAdmin", failure), Color.OrangeRed);
     }
 
     private void StartPlaying()
@@ -669,7 +683,6 @@ internal sealed class RoundManager : GameEvent
         NPCID.TheDestroyer => "You feel vibrations from deep below the arena...",
         NPCID.SkeletronPrime => "The air is getting colder around the arena...",
         NPCID.Plantera => "The jungle grows restless... the Plantera Arena blooms!",
-        NPCID.Golem => "The altar glows... the Golem Arena rumbles to life!",
         NPCID.DukeFishron => "The tide churns... Duke Fishron circles the arena!",
         NPCID.HallowBoss => "A shimmering radiance descends upon the arena...",
         NPCID.CultistBoss => "Fanatics gather at the edge of the arena...",
@@ -684,8 +697,9 @@ internal sealed class RoundManager : GameEvent
         RoundPhase.WaitingForPlayers when preparationFailure.Length > 0 => ("preparation_failed", "Preparation failed"),
         RoundPhase.WaitingForPlayers => ("waiting", idleHeld ? "Waiting" : "Waiting for players"),
         RoundPhase.VotingOrEndScreen when showingResults => ("results", "Results"),
-        RoundPhase.VotingOrEndScreen when ModContent.GetInstance<BossVoteSystem>().Active => ("voting", "Boss voting"),
-        RoundPhase.VotingOrEndScreen => ("vote_result", "Vote result"),
+        RoundPhase.VotingOrEndScreen when ModContent.GetInstance<BossVoteSystem>().Active
+            => ("voting", Language.GetTextValue("Mods.PvPArenas.Voting.ActiveHeader")),
+        RoundPhase.VotingOrEndScreen => ("vote_result", Language.GetTextValue("Mods.PvPArenas.Voting.CompleteHeader")),
         RoundPhase.Generating => ("generating", "Preparing arena"),
         RoundPhase.FreezeCountdown => ("countdown", "Starting round"),
         RoundPhase.Playing => ("playing", "Round in progress"),

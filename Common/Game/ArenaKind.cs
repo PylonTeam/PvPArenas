@@ -4,5 +4,5 @@ internal enum ArenaKind : byte
 {
     ArenasV10,
     UndergroundJungle,
-    JungleTemple
+    CultistDungeon = 3
 }

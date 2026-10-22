@@ -1,8 +1,7 @@
 Voting: {
 	ActiveHeader: Arena Vote
-	CompleteHeader: Vote Complete
-	ChooseBoss: Choose the next boss fight
-	VoteCount: "{0} votes cast · Most votes wins"
+	CompleteHeader: Next arena
+	ChooseBoss: Choose the next arena
 	Selected: Selected
 	MapUnavailable: Map not ready
 }
@@ -15,7 +14,14 @@ LoadoutSelector: {
 
 Round: {
 	PreparationFailedStatus: Arena setup failed
-	PreparationFailed: Arena setup failed: {0} The selected boss has been kept. Fix the arena, then use Start Round in Arena Game Manager to retry, or Start Voting to choose again.
+	PreparationFailed: Arena setup failed. Waiting for an administrator.
+	PreparationFailedAdmin: Arena setup failed: {0} The selected arena has been kept. Fix the issue, then use Start round in Game Manager to retry, or Start voting to choose again.
+	VotingStatus: "Voting · {0}"
+	NextArenaStatus: "Next arena · {0}"
+}
+
+EndScreen: {
+	BossDamage: "Boss damage: {0}"
 }
 
 Configs: {
@@ -23,7 +29,7 @@ Configs: {
 		DisplayName: Server Config
 
 		Headers: {
-			BossFights: Boss Fights
+			ArenaLoadouts: Arena Loadouts
 			Voting: Voting
 			RoundTime: Round Time
 			GemRewards: Gem Rewards
@@ -44,18 +50,18 @@ Configs: {
 			Tooltip: Player stats, loadouts, and arena settings for Plantera.
 		}
 
-		Golem: {
-			Label: Golem
-			Tooltip: Player stats, loadouts, and arena settings for Golem.
+		Cultist: {
+			Label: Lunatic Cultist
+			Tooltip: Player stats, loadouts, and arena settings for the Lunatic Cultist.
 		}
 
 		RoundDurationSeconds: {
-			Label: Round Duration Seconds
+			Label: Round duration (seconds)
 			Tooltip: ""
 		}
 
 		FreezeCountdownSeconds: {
-			Label: Freeze Countdown Seconds
+			Label: Freeze countdown (seconds)
 			Tooltip: ""
 		}
 
@@ -104,7 +110,7 @@ Configs: {
 		}
 
 		GracePeriodSeconds: {
-			Label: Grace Period Seconds
+			Label: Boss grace period (seconds)
 			Tooltip: ""
 		}
 	}
@@ -246,8 +252,8 @@ Configs: {
 			Tooltip: ""
 		}
 
-		JungleTemple: {
-			Label: Jungle Temple
+		CultistDungeon: {
+			Label: Forest and Dungeon
 			Tooltip: ""
 		}
 	}
@@ -255,7 +261,7 @@ Configs: {
 
 Tools: {
 	ArenaGameManagerPanel: {
-		Title: Arena Game Manager
+		Title: Game Manager
 		RoundControls: Round Controls
 	}
 }

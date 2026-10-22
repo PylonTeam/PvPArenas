@@ -103,9 +103,12 @@ internal static class VanillaMirroredJungleGenerator
             {
                 Tile tile = Main.tile[x, y];
                 tile.ClearEverything();
-                tile.HasTile = true;
-                tile.TileType = TileID.Mud;
-                tile.WallType = WallID.JungleUnsafe;
+                if (y < ArenaWorldSystem.LegacyHeight)
+                {
+                    tile.HasTile = true;
+                    tile.TileType = TileID.Mud;
+                    tile.WallType = WallID.JungleUnsafe;
+                }
                 if (x >= layout.ArenaBounds.Left && y >= layout.ArenaBounds.Top && y < layout.ArenaBounds.Bottom)
                     crop.CopyTo(x - layout.ArenaBounds.Left, y - layout.ArenaBounds.Top, x, y);
                 Tile reflected = Main.tile[Main.maxTilesX - 1 - x, y];
@@ -140,7 +143,7 @@ internal static class VanillaMirroredJungleGenerator
                 Main.rand = new Terraria.Utilities.UnifiedRandom(frameSeed);
                 WorldGen.noLiquidCheck = true;
                 for (int x = start; x < end; x++)
-                for (int y = 6; y < Main.maxTilesY - 6; y++)
+                for (int y = 6; y < ArenaWorldSystem.LegacyHeight - 6; y++)
                 {
                     WorldGen.TileFrame(x, y, noBreak: true);
                     Framing.WallFrame(x, y);

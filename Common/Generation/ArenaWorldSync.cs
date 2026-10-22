@@ -31,7 +31,7 @@ internal sealed class ArenaWorldSync : ModSystem
     private static byte clientAttempt;
     private static bool clientStarted;
     private static bool running;
-    private static int surface, rock, spawnX, spawnY;
+    private static int surface, rock, spawnX, spawnY, dungeonX, dungeonY;
 
     internal static bool IsRunning => running;
 
@@ -46,6 +46,8 @@ internal sealed class ArenaWorldSync : ModSystem
         rock = (int)Main.rockLayer;
         spawnX = Main.spawnTileX;
         spawnY = Main.spawnTileY;
+        dungeonX = Main.dungeonX;
+        dungeonY = Main.dungeonY;
         expected = Enumerable.Range(0, SectionCount).Select(index => ArenaTileSync.Fingerprint(SectionBounds(index))).ToArray();
         running = true;
         Log.Debug($"[worldgen] Publishing revision {revision} | Tiles: {Main.maxTilesX * Main.maxTilesY} | Sections: {expected.Length}");
@@ -127,6 +129,9 @@ internal sealed class ArenaWorldSync : ModSystem
         ModPacket packet = Packet(Message.Begin, recipient.Attempt);
         packet.Write((ushort)Main.maxTilesX);
         packet.Write((ushort)Main.maxTilesY);
+        // Vanilla WorldData omits the Dungeon entrance coordinates.
+        packet.Write(dungeonX);
+        packet.Write(dungeonY);
         packet.Send(id);
         if (recipient.Attempt > 1)
             Log.Warn($"[worldgen] Retrying complete world | Revision: {revision} | Client: {id} | Attempt: {recipient.Attempt}/{MaximumAttempts}");
@@ -137,13 +142,15 @@ internal sealed class ArenaWorldSync : ModSystem
         Message message = (Message)reader.ReadByte();
         uint receivedRevision = reader.ReadUInt32();
         byte attempt = reader.ReadByte();
-        int width = 0, height = 0;
+        int width = 0, height = 0, receivedDungeonX = 0, receivedDungeonY = 0;
         ulong[] receivedHashes = null;
         int receivedSurface = 0, receivedRock = 0, receivedSpawnX = 0, receivedSpawnY = 0;
         if (message == Message.Begin)
         {
             width = reader.ReadUInt16();
             height = reader.ReadUInt16();
+            receivedDungeonX = reader.ReadInt32();
+            receivedDungeonY = reader.ReadInt32();
         }
         else if (message == Message.Acknowledge)
         {
@@ -157,6 +164,8 @@ internal sealed class ArenaWorldSync : ModSystem
                 receivedRock = reader.ReadInt32();
                 receivedSpawnX = reader.ReadInt32();
                 receivedSpawnY = reader.ReadInt32();
+                receivedDungeonX = reader.ReadInt32();
+                receivedDungeonY = reader.ReadInt32();
             }
         }
         if (Main.netMode == NetmodeID.Server)
@@ -181,7 +190,8 @@ internal sealed class ArenaWorldSync : ModSystem
                     tiles += bounds.Width * bounds.Height;
                 }
             bool metadata = receivedSurface == surface && receivedRock == rock
-                && receivedSpawnX == spawnX && receivedSpawnY == spawnY;
+                && receivedSpawnX == spawnX && receivedSpawnY == spawnY
+                && receivedDungeonX == dungeonX && receivedDungeonY == dungeonY;
             recipient.Verified = matching == count && metadata;
             Log.Debug($"[worldgen] {(recipient.Verified ? "PASS" : "FAIL")} | Revision: {revision} | Client: {sender} | SectionsVerified: {matching}/{count} | TilesVerifiedToWork: {tiles}/{Main.maxTilesX * Main.maxTilesY} | Metadata: {(metadata ? "PASS" : "FAIL")}");
             if (!recipient.Verified)
@@ -197,6 +207,8 @@ internal sealed class ArenaWorldSync : ModSystem
             clientStarted = width == Main.maxTilesX && height == Main.maxTilesY;
             if (!clientStarted)
                 return;
+            Main.dungeonX = receivedDungeonX;
+            Main.dungeonY = receivedDungeonY;
             // TileSection adds the entities it contains but does not remove old ones.
             // This publication covers the entire world, including the occupied lobby.
             Array.Clear(Main.chest);
@@ -226,6 +238,8 @@ internal sealed class ArenaWorldSync : ModSystem
                 packet.Write((int)Main.rockLayer);
                 packet.Write(Main.spawnTileX);
                 packet.Write(Main.spawnTileY);
+                packet.Write(Main.dungeonX);
+                packet.Write(Main.dungeonY);
                 Main.instance.ClearCachedTileDraws();
                 Lighting.Clear();
                 Main.Map?.Clear();

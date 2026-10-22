@@ -1,5 +1,6 @@
 using System;
 using MonoMod.Cil;
+using PvPArenas.Common.Game;
 
 namespace PvPArenas.Common.Generation;
 
@@ -36,14 +37,18 @@ internal sealed class CompactArenaBackground : ModSystem
         Log.Debug($"[worldgen] PASS | Compact background hook: {il.Method.Name}");
     }
 
-    internal static int BackgroundDepth(int vanillaDepth) => ArenaWorldSystem.IsCompactWorld
+    private static bool IsCultist => ArenaWorldSystem.IsCompactWorld
+        && ModContent.GetInstance<RoundManager>() is { IsActive: true, SelectedBossType: Terraria.ID.NPCID.CultistBoss };
+
+    internal static int BackgroundDepth(int vanillaDepth) => ArenaWorldSystem.IsCompactWorld && !IsCultist
         ? Math.Max(vanillaDepth, (int)Main.rockLayer + 80) : vanillaDepth;
 
     private static void DrawUnderworld(On_Main.orig_DrawUnderworldBackground orig, Main main, bool flat)
     {
         // Compact arenas have no underworld. Keep the Jungle's deepest caves
         // and the authored arena's sky clear of vanilla's hell background.
-        if (JungleDepthSystem.IsJungle || ArenaWorldSystem.IsCompactWorld && Main.worldSurface >= Main.UnderworldLayer) return;
+        if (JungleDepthSystem.IsJungle || ArenaWorldSystem.IsCompactWorld && !IsCultist
+            && Main.worldSurface >= Main.UnderworldLayer) return;
         orig(main, flat);
     }
 }

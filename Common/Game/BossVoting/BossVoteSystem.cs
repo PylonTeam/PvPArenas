@@ -11,7 +11,7 @@ namespace PvPArenas.Common.Game.BossVoting;
 internal sealed class BossVoteSystem : ModSystem
 {
     private readonly Dictionary<int, int> votes = [];
-    private readonly List<byte>[] voters = [[], [], [], []];
+    private readonly List<byte>[] voters = Enumerable.Range(0, FightPresets.Count).Select(_ => new List<byte>()).ToArray();
 
     internal uint BallotId { get; private set; }
     internal bool Active { get; private set; }

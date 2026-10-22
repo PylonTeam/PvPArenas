@@ -15,21 +15,18 @@ internal sealed class ArenaTemplate : ModSystem
     private static Chest[] chests;
     private static Sign[] signs;
     private static byte[][] entities;
-    private static double surface, rock;
-    private static Point spawn, dungeon;
-    private static bool crimson;
+    private static ArenaWorldMetadata metadata;
     internal static bool Available => tiles != null;
 
     public override void OnWorldLoad()
     {
         Clear();
-        if (Main.netMode != NetmodeID.Server || Main.maxTilesX != ArenaWorldSystem.Width
-            || Main.maxTilesY != ArenaWorldSystem.Height)
+        if (Main.netMode != NetmodeID.Server || !ArenaWorldSystem.IsCompactWorld)
             return;
         ArenaWorldSystem.ConfigureAuthoredLayers();
         NormalizeAuthoredFrames();
         // Tilemap.Height is the memory stride, not the loaded world's height. Terraria
-        // can retain a 2401-row allocation for this 600-row world. Store only live tiles.
+        // can retain a 2401-row allocation for a smaller world. Store only live tiles.
         tiles = CurrentTiles().Select(array =>
         {
             Array copy = Array.CreateInstance(array.GetType().GetElementType(), Main.maxTilesX * Main.maxTilesY);
@@ -46,11 +43,7 @@ internal sealed class ArenaTemplate : ModSystem
             TileEntity.Write(writer, entity, networkSend: true);
             return stream.ToArray();
         }).ToArray();
-        surface = Main.worldSurface;
-        rock = Main.rockLayer;
-        spawn = new Point(Main.spawnTileX, Main.spawnTileY);
-        dungeon = new Point(Main.dungeonX, Main.dungeonY);
-        crimson = WorldGen.crimson;
+        metadata = ArenaWorldMetadata.Capture();
         Log.Debug($"[worldgen] PASS | Template captured | Tiles: {Main.maxTilesX * Main.maxTilesY} | "
             + $"World: {Main.maxTilesX}x{Main.maxTilesY} | TileStorage: {Main.tile.Width}x{Main.tile.Height}");
     }
@@ -59,16 +52,10 @@ internal sealed class ArenaTemplate : ModSystem
     {
         if (Main.netMode != NetmodeID.Server || !Available)
             throw new InvalidOperationException("The server's authored arena template is unavailable.");
-        if (Main.maxTilesX != ArenaWorldSystem.Width || Main.maxTilesY != ArenaWorldSystem.Height)
+        if (Main.maxTilesX != ArenaWorldSystem.Width || tiles[0].Length != Main.maxTilesX * Main.maxTilesY)
             throw new InvalidOperationException("The world dimensions changed after the arena template was captured.");
 
-        Main.worldSurface = surface;
-        Main.rockLayer = rock;
-        Main.spawnTileX = spawn.X;
-        Main.spawnTileY = spawn.Y;
-        Main.dungeonX = dungeon.X;
-        Main.dungeonY = dungeon.Y;
-        WorldGen.crimson = crimson;
+        metadata.Apply();
         RestoreEntities(protectedLobby);
         Array[] current = CurrentTiles();
         protectedLobby = Rectangle.Intersect(protectedLobby, new Rectangle(0, 0, Main.maxTilesX, Main.maxTilesY));
@@ -95,6 +82,8 @@ internal sealed class ArenaTemplate : ModSystem
         if (Main.netMode == NetmodeID.Server)
             Liquid.ReInit();
     }
+
+    internal static void RestoreMetadata() => metadata?.Apply();
 
     private static void NormalizeAuthoredFrames()
     {
@@ -226,5 +215,5 @@ internal sealed class ArenaTemplate : ModSystem
 
     public override void OnWorldUnload() => Clear();
     public override void Unload() => Clear();
-    private static void Clear() { tiles = null; chests = null; signs = null; entities = null; }
+    private static void Clear() { tiles = null; chests = null; signs = null; entities = null; metadata = null; }
 }

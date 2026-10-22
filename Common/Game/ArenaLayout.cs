@@ -8,7 +8,10 @@ internal sealed record ArenaLayout(Rectangle ArenaBounds, Point BlueSpawn, Point
     internal const int SpawnBoxWidth = 20;
     internal const int SpawnBoxHeight = 10;
 
-    internal Rectangle BossBounds => new(
+    internal Rectangle? RespawnBounds { get; init; }
+    internal Rectangle? BossAreaBounds { get; init; }
+
+    internal Rectangle BossBounds => BossAreaBounds ?? new(
         ArenaBounds.X + ArenaBounds.Width / 4,
         ArenaBounds.Y,
         ArenaBounds.Width / 2,
@@ -41,10 +44,19 @@ internal sealed record ArenaLayout(Rectangle ArenaBounds, Point BlueSpawn, Point
         Write(writer, BlueSpawn);
         Write(writer, RedSpawn);
         Write(writer, BossSpawn);
+        writer.Write(RespawnBounds.HasValue);
+        if (RespawnBounds is { } respawns) Write(writer, respawns);
+        writer.Write(BossAreaBounds.HasValue);
+        if (BossAreaBounds is { } boss) Write(writer, boss);
     }
 
     internal static ArenaLayout Read(BinaryReader reader) => new(
-        ReadRectangle(reader), ReadPoint(reader), ReadPoint(reader)) { BossSpawn = ReadPoint(reader) };
+        ReadRectangle(reader), ReadPoint(reader), ReadPoint(reader))
+        {
+            BossSpawn = ReadPoint(reader),
+            RespawnBounds = reader.ReadBoolean() ? ReadRectangle(reader) : null,
+            BossAreaBounds = reader.ReadBoolean() ? ReadRectangle(reader) : null
+        };
 
     private static void Write(BinaryWriter writer, Rectangle value)
     {

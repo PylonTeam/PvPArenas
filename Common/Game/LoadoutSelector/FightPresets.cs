@@ -8,15 +8,14 @@ internal static class FightPresets
 {
     internal const int Count = 4;
 
-    // Plantera generates its jungle; Golem still needs its authored temple.
-    internal static bool IsAvailable(int index) => index is 0 or 1 or 2;
+    internal static bool IsAvailable(int index) => index >= 0 && index < Count;
 
     internal static int BossType(int index) => index switch
     {
         0 => NPCID.KingSlime,
         1 => NPCID.EyeofCthulhu,
         2 => NPCID.Plantera,
-        3 => NPCID.Golem,
+        3 => NPCID.CultistBoss,
         _ => NPCID.None
     };
 
@@ -26,11 +25,12 @@ internal static class FightPresets
         ArenaKind = index switch
         {
             2 => ArenaKind.UndergroundJungle,
-            3 => ArenaKind.JungleTemple,
+            3 => ArenaKind.CultistDungeon,
             _ => ArenaKind.ArenasV10
         },
         MaxHealth = index < 2 ? 200 : index == 2 ? 400 : 500,
         MaxMana = index < 2 ? 100 : index == 2 ? 180 : 200,
+        GracePeriodSeconds = 5,
         Loadouts = index switch
         {
             2 => CreatePostMechLoadouts(),

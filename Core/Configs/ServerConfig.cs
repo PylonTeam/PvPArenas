@@ -19,11 +19,11 @@ internal sealed class ServerConfig : ModConfig
     private BossFightPreset kingSlime = FightPresets.Create(0);
     private BossFightPreset eyeOfCthulhu = FightPresets.Create(1);
     private BossFightPreset plantera = FightPresets.Create(2);
-    private BossFightPreset golem = FightPresets.Create(3);
+    private BossFightPreset cultist = FightPresets.Create(3);
     private int configuredPresets;
     private JArray legacyPresets;
 
-    [Header("BossFights")]
+    [Header("ArenaLoadouts")]
     [Expand(false), JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace, DefaultValueHandling = DefaultValueHandling.Ignore)]
     public BossFightPreset KingSlime
     {
@@ -46,10 +46,10 @@ internal sealed class ServerConfig : ModConfig
     }
 
     [Expand(false), JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace, DefaultValueHandling = DefaultValueHandling.Ignore)]
-    public BossFightPreset Golem
+    public BossFightPreset Cultist
     {
-        get => golem;
-        set { golem = value; configuredPresets |= 8; }
+        get => cultist;
+        set { cultist = value; configuredPresets |= 8; }
     }
 
     [Header("Voting")]
@@ -75,7 +75,7 @@ internal sealed class ServerConfig : ModConfig
         0 => kingSlime,
         1 => eyeOfCthulhu,
         2 => plantera,
-        3 => golem,
+        3 => cultist,
         _ => null
     };
 
@@ -97,7 +97,7 @@ internal sealed class ServerConfig : ModConfig
         clone.kingSlime = settings.kingSlime;
         clone.eyeOfCthulhu = settings.eyeOfCthulhu;
         clone.plantera = settings.plantera;
-        clone.golem = settings.golem;
+        clone.cultist = settings.cultist;
         clone.legacyPresets = null;
         return clone;
     }
@@ -136,7 +136,7 @@ internal sealed class ServerConfig : ModConfig
                 case 0: kingSlime = preset; break;
                 case 1: eyeOfCthulhu = preset; break;
                 case 2: plantera = preset; break;
-                case 3: golem = preset; break;
+                case 3: cultist = preset; break;
             }
         }
 

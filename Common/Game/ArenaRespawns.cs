@@ -28,7 +28,7 @@ internal static class ArenaRespawns
             Team.Blue => new(Main.maxTilesX - sideWidth, 0, sideWidth, Main.maxTilesY),
             _ => Rectangle.Empty
         };
-        return Rectangle.Intersect(layout.ArenaBounds, side);
+        return Rectangle.Intersect(Rectangle.Intersect(layout.ArenaBounds, layout.RespawnBounds ?? layout.ArenaBounds), side);
     }
 
     // Unassigned late joins may stage before receiving a team. Dead fighters remain eligible.

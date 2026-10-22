@@ -1,5 +1,6 @@
 using PvPArenas.Common.Game;
 using PvPArenas.Common.Game.LoadoutSelector;
+using PvPArenas.Common.CultistArena;
 using System;
 using Terraria.ID;
 
@@ -17,23 +18,21 @@ internal static class ArenaGeneration
             failure = "The boss preset is missing a valid NPC.";
             return false;
         }
-        failure = ArenaWorldSystem.MissingArena(preset.ArenaKind);
-        if (failure.Length > 0)
-            return false;
-        if (Main.maxTilesX != ArenaWorldSystem.Width || Main.maxTilesY != ArenaWorldSystem.Height)
+        if (!ArenaWorldSystem.IsCompactWorld)
         {
             failure = "Arenas_v10 has not been loaded. Re-enter the world to start an arena session.";
             return false;
         }
 
-        if (preset.ArenaKind == ArenaKind.UndergroundJungle)
+        if (preset.ArenaKind is ArenaKind.UndergroundJungle or ArenaKind.CultistDungeon)
         {
-            layout = MirroredJungleGenerator.CreateLayout();
+            layout = preset.ArenaKind == ArenaKind.CultistDungeon
+                ? CultistArenaGenerator.CreateLayout() : MirroredJungleGenerator.CreateLayout();
             // The initial spawn planner validates each team and can recover from blocked player anchors.
-            if (IsOpenBossSpace(layout.BossSpawn.X, layout.BossSpawn.Y))
+            if (layout != null && IsOpenBossSpace(layout.BossSpawn.X, layout.BossSpawn.Y))
                 return true;
             layout = null;
-            failure = "The generated jungle did not provide a clear boss spawn.";
+            failure = "The generated arena did not provide a clear boss spawn.";
             return false;
         }
 

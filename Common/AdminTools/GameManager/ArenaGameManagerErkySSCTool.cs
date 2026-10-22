@@ -31,7 +31,7 @@ internal sealed class ArenaGameManagerErkySSCTool : ModSystem
         // Framework registers the shared game manager. Remove any old mode-owned entry.
         Clear(mod, GameOwner);
 
-        Add(mod, WorldGenOwner, "world_gen_manager", "Arenas: World Gen Manager",
+        Add(mod, WorldGenOwner, "world_gen_manager", "World Generation",
             "Select world generation passes and run them", VanillaAdminIcons.MixedSeed.Asset, 32,
             () => ModContent.GetInstance<WorldGenManager.WorldGenManagerUISystem>().Toggle(),
             () => ModContent.GetInstance<WorldGenManager.WorldGenManagerUISystem>().IsActive);

@@ -2,7 +2,6 @@ using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using PvPArenas.Common.UI;
 using PvPArenas.Core.Configs;
-using PvPFramework.Core.Utilities;
 using System;
 using System.Collections.Generic;
 using Terraria;
@@ -14,6 +13,7 @@ using Terraria.Localization;
 using Terraria.ModLoader;
 using Terraria.ModLoader.Config;
 using Terraria.UI;
+using static PvPArenas.Common.Game.LoadoutPreviewGeometry;
 
 namespace PvPArenas.Common.Game.LoadoutSelector;
 
@@ -40,23 +40,7 @@ internal static class LoadoutPreviewDrawer
         SandboxSlotKind.GrapplingHook, SandboxSlotKind.Mount
     ];
 
-    private const int InventoryColumns = 10;
-    private const int EquipmentRows = 3;
-    private const int SlotStep = 40;
-    private const int SlotSize = 36;
     private const int EquipmentSlotKeyOffset = 1000;
-
-    private const int HeaderHeight = 76;
-    private const int PreviewWidth = 96;
-    private const int SidePadding = 14;
-    private const int PreviewInventoryGap = 12;
-    private const int InventoryEquipmentGap = 10;
-
-    private const int MaxLoadoutColumns = 4;
-    private const int LoadoutCardHeight = 62;
-    private const int LoadoutCardMaxWidth = 180;
-    private const int LoadoutSelectorBottomPadding = 8;
-    private const int CardGap = 8;
 
     private static BossFightPreset currentPreset;
 
@@ -147,14 +131,13 @@ internal static class LoadoutPreviewDrawer
     {
         // Every choice uses the same geometry, so previews cannot move their own hitboxes.
         if (layoutRows > 0) return layoutRows;
-        int rows = preset.IsSandbox() ? 5 : EquipmentRows;
-        for (int i = 0; i < (preset.Loadouts?.Count ?? 0); i++)
+        int[] counts = new int[preset.Loadouts?.Count ?? 0];
+        for (int i = 0; i < counts.Length; i++)
         {
             Loadout loadout = ArenaPlayer.ResolveLoadout(preset, i);
-            int slots = Math.Clamp(loadout.Inventory?.Count ?? 0, 10, LoadoutSlotLayout.SlotCount);
-            rows = Math.Max(rows, (slots + InventoryColumns - 1) / InventoryColumns);
+            counts[i] = loadout.Inventory?.Count ?? 0;
         }
-        return layoutRows = rows;
+        return layoutRows = MaximumGridRows(counts, preset.IsSandbox());
     }
 
     public static void Draw(int top)
@@ -212,14 +195,15 @@ internal static class LoadoutPreviewDrawer
             hoveredLoadoutIndex = -1;
 
         int gridRows = GetGridRowCount(preset);
-        int designWidth = GetDesignWidth((EquipKinds.Length + EquipmentRows - 1) / EquipmentRows);
-        int designHeight = GetDesignHeight(optionCount, gridRows);
-        float scale = CalculateScale(top, designWidth, designHeight);
+        // InterfaceScaleType.UI supplies logical screen/mouse coordinates, as it does for voting.
+        LoadoutPreviewLayout layout = Calculate(Main.screenWidth, Main.screenHeight, top,
+            optionCount, gridRows, (EquipKinds.Length + EquipmentRows - 1) / EquipmentRows);
+        float scale = layout.Scale;
         int S(float value) => Math.Max(1, (int)MathF.Round(value * scale));
-        Rectangle panel = new((Main.screenWidth - S(designWidth)) / 2, top, S(designWidth), S(designHeight));
+        Rectangle panel = layout.Panel;
 
         hoveredLoadoutIndex = showSelector
-            ? GetHoveredLoadoutIndex(preset, panel, panel.Y + S(HeaderHeight), S, mouse)
+            ? GetHoveredLoadoutIndex(layout, mouse)
             : -1;
         EnsureRebuilt(manager.SelectedPresetIndex, preset);
 
@@ -252,10 +236,10 @@ internal static class LoadoutPreviewDrawer
                 Main.spriteBatch,
                 title,
                 new Vector2(
-                    panel.Center.X,
-                    panel.Y + S(4)),
+                    layout.TitleBox.Center.X,
+                    layout.TitleBox.Y),
                 ArenaUIStyle.Title * alpha,
-                Math.Min(.63f * scale, (panel.Width - S(28)) / Math.Max(1f, FontAssets.DeathText.Value.MeasureString(title).X)),
+                Math.Min(TitleScale * scale, layout.TitleBox.Width / Math.Max(1f, FontAssets.DeathText.Value.MeasureString(title).X)),
                 .5f,
                 0f);
 
@@ -268,16 +252,16 @@ internal static class LoadoutPreviewDrawer
             Text(
                 bossName,
                 new Vector2(
-                    panel.X + S(15),
-                    panel.Y + S(38)),
+                    layout.BossNameBox.X,
+                    layout.BossNameBox.Y),
                 Color.White,
-                .94f * scale,
-                panel.Width - S(110), 0f);
+                BossNameScale * scale,
+                layout.BossNameBox.Width, 0f);
 
             int seconds = Math.Max(0, (manager.RemainingTicks + 59) / 60);
-            Text($"{seconds / 60}:{seconds % 60:00}", new Vector2(panel.Right - S(15), panel.Y + S(40)),
-                Color.Silver, .7f * scale, S(76), 1f);
-            Rectangle track = new(panel.X + S(15), panel.Y + S(64), panel.Width - S(30), S(3));
+            Text($"{seconds / 60}:{seconds % 60:00}", new Vector2(layout.TimerBox.Right, layout.TimerBox.Y),
+                Color.Silver, TimerScale * scale, layout.TimerBox.Width, 1f);
+            Rectangle track = layout.ProgressBox;
             float progress = Math.Clamp(manager.RemainingTicks /
                 (60f * Math.Max(1, ModContent.GetInstance<ServerConfig>().FreezeCountdownSeconds)), 0f, 1f);
             Main.spriteBatch.Draw(TextureAssets.MagicPixel.Value, track, Color.Black * (.3f * alpha));
@@ -287,63 +271,31 @@ internal static class LoadoutPreviewDrawer
             if (!PlayerInput.IgnoreMouseInterface && panel.Contains(Main.mouseX, Main.mouseY))
                 Main.LocalPlayer.mouseInterface = true;
 
-            int contentTop =
-                panel.Y + S(HeaderHeight);
-
             if (showSelector)
             {
                 DrawLoadoutCards(
                     preset,
-                    panel,
-                    contentTop,
+                    layout,
                     S,
                     scale,
                     mouse);
-
-                contentTop +=
-                    S(GetLoadoutSelectorHeight(optionCount));
             }
 
-            int gridHeight =
-                gridRows * S(SlotStep);
-
-            Rectangle previewBox = new(
-                panel.X + S(SidePadding),
-                contentTop,
-                S(PreviewWidth),
-                gridHeight);
-
             DrawPreviewBox(
-                previewBox,
+                layout,
                 mouse);
 
-            DrawLoadoutStats(previewBox, scale, S);
-
-            int inventoryOriginX =
-                previewBox.Right
-                + S(PreviewInventoryGap);
+            DrawLoadoutStats(layout, S);
 
             DrawInventorySlots(
-                inventoryOriginX,
-                contentTop,
-                scale,
-                mouse,
-                S);
+                layout,
+                mouse);
 
             if (equipmentSlots.Count > 0)
             {
-                int equipmentOriginX =
-                    inventoryOriginX
-                    + InventoryColumns * S(SlotStep)
-                    + S(InventoryEquipmentGap);
-
                 DrawEquipmentSlots(
-                    equipmentOriginX,
-                    contentTop,
-                    EquipmentRows,
-                    scale,
-                    mouse,
-                    S);
+                    layout,
+                    mouse);
             }
         }
         finally

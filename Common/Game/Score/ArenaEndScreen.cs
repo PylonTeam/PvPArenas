@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Terraria.Enums;
+using Terraria.Localization;
 
 namespace PvPArenas.Common.Game.Score;
 
@@ -52,7 +53,7 @@ internal static class ArenaEndScreen
             summary.Players.Add(new EndScreenPlayerStats(
                 stats.PlayerId, stats.Team, stats.Name, stats.Kills, stats.Deaths,
                 Clamp(stats.Damage), 0, 0, 0, 0, 0, 0, Clamp(bossDamage), 0, 0, 0,
-                role, $"{bossDamage} damage"));
+                role, Language.GetTextValue("Mods.PvPArenas.EndScreen.BossDamage", bossDamage)));
 
             bool winner = winningTeam != Team.None && (Team)player.team == winningTeam;
             uint reward = winner && gemReward > 0 ? gemReward : 0;

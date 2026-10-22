@@ -25,13 +25,18 @@ internal sealed class VanillaJungleSandbox : IDisposable
     private const BindingFlags StaticFields = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
     private static int activeScope;
     private readonly int seed, ownerThread;
+    private readonly int width, height;
     private State scratch;
     private TilePlanes planes;
     private bool disposed;
 
-    internal VanillaJungleSandbox(int seed)
+    internal VanillaJungleSandbox(int seed) : this(seed, SourceWidth, SourceHeight) { }
+
+    internal VanillaJungleSandbox(int seed, int width, int height)
     {
         this.seed = seed;
+        this.width = width;
+        this.height = height;
         ownerThread = Environment.CurrentManagedThreadId;
         if (WorldGen.VanillaGenPasses.Count == 0) WorldGen.AddGenPasses();
         // Ensure every vanilla plane is registered before capturing its GC handle.
@@ -51,7 +56,7 @@ internal sealed class VanillaJungleSandbox : IDisposable
             // The ordinary constructor frees the current pins. Detach their data first;
             // livePlanes owns those still-valid pins until the finally block restores them.
             livePlanes.DetachArrays();
-            Main.tile = new Tilemap(SourceWidth, SourceHeight);
+            Main.tile = new Tilemap(checked((ushort)width), checked((ushort)height));
             planes = TilePlanes.Capture();
             Initialize();
             scratch = State.Capture();
@@ -71,7 +76,8 @@ internal sealed class VanillaJungleSandbox : IDisposable
         }
     }
 
-    internal void Run(string passName, WorldGenProgressLog trace)
+    internal void Run(string passName, WorldGenProgressLog trace,
+        Func<GameConfiguration, GameConfiguration> configure = null)
     {
         if (!WorldGen.VanillaGenPasses.TryGetValue(passName, out GenPass pass))
             throw new ArgumentException($"Vanilla generation pass '{passName}' is unavailable.", nameof(passName));
@@ -87,7 +93,8 @@ internal sealed class VanillaJungleSandbox : IDisposable
             {
                 pass.Reset();
                 GenerationProgress progress = new();
-                pass.Apply(progress, GenVars.configuration.GetPassConfiguration(pass.Name));
+                GameConfiguration configuration = GenVars.configuration.GetPassConfiguration(pass.Name);
+                pass.Apply(progress, configure == null ? configuration : configure(configuration));
             }
             catch (Exception error)
             {
@@ -99,6 +106,8 @@ internal sealed class VanillaJungleSandbox : IDisposable
     }
 
     /// <summary>Copy value data inside this callback. Tile handles must never escape it.</summary>
+    internal void Configure(Action configure) => InScope(configure);
+
     internal void Read(Action read) => InScope(() =>
     {
         // Placement framing must not queue liquid work for a rejected source attempt.
@@ -155,18 +164,18 @@ internal sealed class VanillaJungleSandbox : IDisposable
 
     private void Initialize()
     {
-        Main.maxTilesX = SourceWidth;
-        Main.maxTilesY = SourceHeight;
+        Main.maxTilesX = WorldGen.lastMaxTilesX = width;
+        Main.maxTilesY = WorldGen.lastMaxTilesY = height;
         Main.leftWorld = Main.topWorld = 0;
-        Main.rightWorld = SourceWidth * 16;
-        Main.bottomWorld = SourceHeight * 16;
+        Main.rightWorld = width * 16;
+        Main.bottomWorld = height * 16;
         Main.netMode = NetmodeID.SinglePlayer;
         Main.dedServ = true;
         WorldGen.noMapUpdate = true;
         Main.hardMode = false;
         Main.worldSurface = Main.rockLayer = 0;
         Main.ActiveWorldFileData = new WorldFileData { Name = "PvPArenas Jungle source", GameMode = Main.GameMode };
-        Main.ActiveWorldFileData.SetWorldSize(SourceWidth, SourceHeight);
+        Main.ActiveWorldFileData.SetWorldSize(width, height);
         Main.ActiveWorldFileData.SetSeed(seed.ToString(System.Globalization.CultureInfo.InvariantCulture));
         Main.chest = new Chest[Main.chest.Length];
         Main.sign = new Sign[Main.sign.Length];
@@ -201,9 +210,9 @@ internal sealed class VanillaJungleSandbox : IDisposable
         Main.tenthAnniversaryWorld = Main.notTheBeesWorld = Main.dontStarveWorld = Main.noTrapsWorld = false;
         GenVars.configuration = WorldGenConfiguration.FromEmbeddedPath("Terraria.GameContent.WorldBuilding.Configuration.json");
         GenVars.structures = new StructureMap();
-        GenVars.desertHiveHigh = SourceHeight;
+        GenVars.desertHiveHigh = height;
         GenVars.desertHiveLow = GenVars.desertHiveRight = 0;
-        GenVars.desertHiveLeft = SourceWidth;
+        GenVars.desertHiveLeft = width;
         GenVars.worldSurfaceLow = GenVars.worldSurface = GenVars.worldSurfaceHigh = 0;
         GenVars.rockLayerLow = GenVars.rockLayer = GenVars.rockLayerHigh = 0;
         GenVars.copper = TileID.Copper;
@@ -213,8 +222,8 @@ internal sealed class VanillaJungleSandbox : IDisposable
         GenVars.jungleHut = (ushort)WorldGen.genRand.Next(5);
         GenVars.jungleOriginX = GenVars.dungeonSide = 0;
         GenVars.jungleMinX = GenVars.jungleMaxX = -1;
-        GenVars.snowMinX = new int[SourceHeight];
-        GenVars.snowMaxX = new int[SourceHeight];
+        GenVars.snowMinX = new int[height];
+        GenVars.snowMaxX = new int[height];
         GenVars.snowTop = GenVars.snowBottom = 0;
         GenVars.skyLakes = 1;
         GenVars.beachBordersWidth = 275;

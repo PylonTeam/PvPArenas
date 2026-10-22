@@ -2,6 +2,7 @@ using PvPArenas.Common.AdminTools.WorldGenManager;
 using PvPArenas.Common.Game;
 using PvPArenas.Common.Game.LoadoutSelector;
 using PvPArenas.Common.Loadouts;
+using PvPArenas.Common.CultistArena;
 using System;
 using System.Collections.Generic;
 using Terraria.Chat;
@@ -41,7 +42,7 @@ internal sealed class ArenaPreparation : ModSystem
         failure = Main.netMode != NetmodeID.Server ? "Arena preparation must run on the server."
             : !ArenaWorldSystem.IsCompactWorld ? "Reopen the server to load Arenas_v10."
             : !ArenaTemplate.Available ? "The authored arena template is unavailable. Reopen the server."
-            : ArenaWorldSystem.MissingArena(preset.ArenaKind);
+            : "";
         if (failure.Length > 0) return false;
 
         Cancel();
@@ -49,16 +50,28 @@ internal sealed class ArenaPreparation : ModSystem
         StagingSpawn = new Point(Math.Clamp(Main.spawnTileX, 10, Main.maxTilesX - 11),
             Math.Clamp(Main.spawnTileY, 10, Main.maxTilesY - 11));
         ModContent.GetInstance<WorldGenPassRunner>()?.Shutdown();
-        restoringAuthored = preset.ArenaKind != ArenaKind.UndergroundJungle;
+        if (preset.ArenaKind == ArenaKind.CultistDungeon && Main.maxTilesY != ArenaWorldSystem.Height)
+        {
+            failure = "Restart the server to load the 850×1200 Cultist arena world.";
+            return false;
+        }
+        restoringAuthored = preset.ArenaKind == ArenaKind.ArenasV10;
         preparingPreset = preset;
         recoveryFailure = "";
-        int seed = restoringAuthored ? 0 : Random.Shared.Next();
-        StartLog(restoringAuthored ? "Restore Arenas_v10" : "Plantera arena", seed);
+        int seed = preset.ArenaKind == ArenaKind.CultistDungeon ? CultistArenaGenerator.DefaultSeed
+            : restoringAuthored ? 0 : Random.Shared.Next();
+        StartLog(preset.ArenaKind == ArenaKind.CultistDungeon ? "Cultist arena"
+            : restoringAuthored ? "Restore Arenas_v10" : "Plantera arena", seed);
         ClearActors();
         ArenaTemplate.ClearEntitiesOutside(Rectangle.Empty);
+        ArenaTemplate.RestoreMetadata();
         // Every transition replaces every tile, even repeated rounds of the same preset.
-        steps = (restoringAuthored ? ArenaTemplate.Restore(Rectangle.Empty)
-            : MirroredJungleGenerator.GenerateWithProgress(seed, Rectangle.Empty, progressLog)).GetEnumerator();
+        steps = (preset.ArenaKind switch
+        {
+            ArenaKind.CultistDungeon => CultistArenaGenerator.GenerateWithProgress(seed, progressLog),
+            ArenaKind.UndergroundJungle => MirroredJungleGenerator.GenerateWithProgress(seed, Rectangle.Empty, progressLog),
+            _ => ArenaTemplate.Restore(Rectangle.Empty)
+        }).GetEnumerator();
         return true;
     }
 
@@ -183,6 +196,6 @@ internal sealed class ArenaPreparation : ModSystem
         }
     }
 
-    public override void OnWorldLoad() { Cancel(); MirroredJungleGenerator.ResetLayout(); }
-    public override void OnWorldUnload() { Cancel(); MirroredJungleGenerator.ResetLayout(); }
+    public override void OnWorldLoad() { Cancel(); MirroredJungleGenerator.ResetLayout(); CultistArenaGenerator.ResetLayout(); }
+    public override void OnWorldUnload() { Cancel(); MirroredJungleGenerator.ResetLayout(); CultistArenaGenerator.ResetLayout(); }
 }

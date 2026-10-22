@@ -13,10 +13,11 @@ internal sealed class ArenaWorldSystem : ModSystem
 {
     internal const string WorldAsset = "Core/WorldFiles/Arenas_v10.wld";
     internal const int Width = 850;
-    internal const int Height = 600;
+    internal const int Height = 1200;
+    internal const int LegacyHeight = 600;
     internal const int Margin = 20;
-    internal static Rectangle PlayBounds => new(Margin, Margin, Width - Margin * 2, Height - Margin * 2);
-    internal static bool IsCompactWorld => Main.maxTilesX == Width && Main.maxTilesY == Height;
+    internal static Rectangle PlayBounds => new(Margin, Margin, Width - Margin * 2, LegacyHeight - Margin * 2);
+    internal static bool IsCompactWorld => Main.maxTilesX == Width && Main.maxTilesY is Height or LegacyHeight;
 
     internal static void ConfigureAuthoredLayers()
     {
@@ -24,7 +25,7 @@ internal sealed class ArenaWorldSystem : ModSystem
         double previousSurface = Main.worldSurface, previousRock = Main.rockLayer;
         // PlantAlch chooses [(rock + height) / 2, height - 20). The bundled
         // 558/588 anchors invert that range in a 600-tile world.
-        Main.rockLayer = Math.Min(Main.rockLayer, Height - 42);
+        Main.rockLayer = Math.Min(Main.rockLayer, LegacyHeight - 42);
         Main.worldSurface = Math.Min(Main.worldSurface, Main.rockLayer - 30);
         Log.Debug($"[worldgen] PASS | Authored layers | Surface: {previousSurface}->{Main.worldSurface} | "
             + $"Rock: {previousRock}->{Main.rockLayer} | Underworld: {Main.UnderworldLayer}");
@@ -85,7 +86,7 @@ internal sealed class ArenaWorldSystem : ModSystem
 
     internal static WorldFileData CreateSessionWorld(byte[] bytes, string path)
     {
-        File.WriteAllBytes(path, bytes);
+        File.WriteAllBytes(path, ArenaWorldFile.Expand(bytes));
         WorldFileData world = WorldFile.GetAllMetadata(path, false);
         if (world?.IsValid != true || world.WorldSizeX != Width || world.WorldSizeY != Height)
         {
@@ -101,13 +102,21 @@ internal sealed class ArenaWorldSystem : ModSystem
             orig(useCloudSaving, resetTime);
     }
 
-    internal static string MissingArena(ArenaKind kind) => kind switch
-    {
-        ArenaKind.JungleTemple => "The custom Golem arena has not been supplied yet.",
-        _ => ""
-    };
-
     public override void OnWorldUnload() => ReleaseSession();
+
+    // Native WorldData includes the layers and background styles but omits
+    // Dungeon coordinates. Include them for late joins as well as round swaps.
+    public override void NetSend(BinaryWriter writer)
+    {
+        writer.Write(Main.dungeonX);
+        writer.Write(Main.dungeonY);
+    }
+
+    public override void NetReceive(BinaryReader reader)
+    {
+        Main.dungeonX = reader.ReadInt32();
+        Main.dungeonY = reader.ReadInt32();
+    }
 
     private void ReleaseSession()
     {

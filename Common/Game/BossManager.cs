@@ -1,4 +1,5 @@
 using PvPArenas.Common.Game.LoadoutSelector;
+using PvPArenas.Common.CultistArena;
 using PvPFramework.Common.Combat.TeamBoss;
 using PvPFramework.Core.Configs.ConfigElements;
 using System;
@@ -26,7 +27,6 @@ internal sealed class BossManager : ModSystem
     private int missingTicks;
     private Rectangle roundArea;
     private Rectangle bossArea;
-    private bool loggedGolemDistanceRecovery;
     private readonly KingSlimeArena kingSlime = new();
 
     internal int BossIndex => bossIndex;
@@ -36,7 +36,6 @@ internal sealed class BossManager : ModSystem
         TeamBossNPC.BossDefeatedByTeam += OnBossDefeatedByTeam;
         TeamBossNPC.BossDamageDealt += OnBossDamageDealt;
         On_NPC.TargetClosest += OnTargetClosest;
-        On_NPC.AI_045_Golem += OnGolemAI;
     }
 
     public override void Unload()
@@ -44,7 +43,6 @@ internal sealed class BossManager : ModSystem
         TeamBossNPC.BossDefeatedByTeam -= OnBossDefeatedByTeam;
         TeamBossNPC.BossDamageDealt -= OnBossDamageDealt;
         On_NPC.TargetClosest -= OnTargetClosest;
-        On_NPC.AI_045_Golem -= OnGolemAI;
     }
 
     internal bool TrySpawn(BossFightPreset preset, ArenaLayout layout)
@@ -57,8 +55,9 @@ internal sealed class BossManager : ModSystem
         PrepareBossEnvironment(preset.Boss.Type);
         roundArea = new Rectangle(layout.ArenaBounds.X * 16, layout.ArenaBounds.Y * 16,
             layout.ArenaBounds.Width * 16, layout.ArenaBounds.Height * 16);
-        // Plantera must be able to pursue players through both mirrored cave networks.
-        Rectangle bossTiles = preset.Boss.Type == NPCID.Plantera ? layout.ArenaBounds : layout.BossBounds;
+        // Plantera pursues both cave networks; Cultist can follow fighters from surface to Hell.
+        Rectangle bossTiles = preset.Boss.Type is NPCID.Plantera or NPCID.CultistBoss
+            ? layout.ArenaBounds : layout.BossBounds;
         if (preset.Boss.Type == NPCID.KingSlime)
             bossTiles = Rectangle.Intersect(layout.ArenaBounds, KingSlimeArena.TileBounds);
         bossArea = new Rectangle(bossTiles.X * 16, bossTiles.Y * 16,
@@ -74,8 +73,8 @@ internal sealed class BossManager : ModSystem
         bossIndex = index;
         bossType = preset.Boss.Type;
         missingTicks = 0;
-        loggedGolemDistanceRecovery = false;
         NPC boss = Main.npc[index];
+        CultistArenaEncounter.Begin(boss, roundArea);
         if (bossType == NPCID.KingSlime)
         {
             Point size = KingSlimeArena.FullSize;
@@ -113,7 +112,7 @@ internal sealed class BossManager : ModSystem
                     kingSlime.Update(boss, bossArea, preferred);
                 }
             }
-            else
+            else if (bossType != NPCID.CultistBoss)
                 ContainBoss(boss);
             boss.timeLeft = Math.Max(boss.timeLeft, 3600);
             return BossState.Alive;
@@ -125,6 +124,7 @@ internal sealed class BossManager : ModSystem
 
     internal void Cleanup()
     {
+        CultistArenaEncounter.Cleanup();
         int ownedIndex = bossIndex;
         if (ownedIndex >= 0)
         {
@@ -150,7 +150,6 @@ internal sealed class BossManager : ModSystem
         bossIndex = -1;
         bossType = 0;
         missingTicks = 0;
-        loggedGolemDistanceRecovery = false;
         kingSlime.Reset();
         roundArea = Rectangle.Empty;
         bossArea = Rectangle.Empty;
@@ -240,28 +239,22 @@ internal sealed class BossManager : ModSystem
         return target;
     }
 
-    private int FindManagedTarget(NPC npc)
-    {
-        int target = FindTarget(npc, bossArea);
-
-        // A 400-tile arena places Golem more than its hard-coded 3,000-pixel
-        // despawn distance from both edge spawns. Give only Golem a full-arena
-        // fallback target; its position is still clamped to bossArea below.
-        if (target < 0 && bossType == NPCID.Golem)
-            target = FindTarget(npc, roundArea);
-
-        return target;
-    }
+    private int FindManagedTarget(NPC npc) => FindTarget(npc, bossArea);
 
     private void OnTargetClosest(On_NPC.orig_TargetClosest orig, NPC npc, bool faceTarget)
     {
-        if (!IsOwnedBoss(npc) || bossArea.Width <= 0 || bossArea.Height <= 0)
+        int target;
+        if (npc.type is NPCID.CultistBoss or NPCID.CultistBossClone
+            && npc.TryGetGlobalNPC(out CultistArenaNPC cultist) && cultist.Managed)
+            target = CultistArenaEncounter.FindTarget(npc, cultist.Bounds);
+        else if (!IsOwnedBoss(npc) || bossArea.Width <= 0 || bossArea.Height <= 0)
         {
             orig(npc, faceTarget);
             return;
         }
+        else
+            target = FindManagedTarget(npc);
 
-        int target = FindManagedTarget(npc);
         npc.target = target >= 0 ? target : Main.maxPlayers;
         if (!faceTarget || target < 0)
             return;
@@ -269,61 +262,6 @@ internal sealed class BossManager : ModSystem
         Player player = Main.player[target];
         npc.direction = npc.Center.X < player.Center.X ? 1 : -1;
         npc.directionY = npc.Center.Y < player.Center.Y ? 1 : -1;
-    }
-
-    private void OnGolemAI(On_NPC.orig_AI_045_Golem orig, NPC npc)
-    {
-        bool ownedRoundGolem = IsManagedRoundGolem(npc);
-
-        orig(npc);
-
-        // Vanilla Golem directly sets active=false when its Manhattan distance
-        // from its target remains above 3,000 pixels. timeLeft cannot prevent it.
-        // Arenas owns round completion, so keep a living managed Golem active.
-        if (!ownedRoundGolem || npc.active || npc.life <= 0)
-            return;
-
-        npc.active = true;
-        npc.timeLeft = Math.Max(npc.timeLeft, 3600);
-
-        if (Main.netMode != NetmodeID.MultiplayerClient)
-        {
-            int target = FindManagedTarget(npc);
-            npc.target = target >= 0 ? target : Main.maxPlayers;
-        }
-
-        if (loggedGolemDistanceRecovery)
-            return;
-
-        loggedGolemDistanceRecovery = true;
-        if (Main.netMode == NetmodeID.MultiplayerClient)
-            return;
-
-        npc.netUpdate = true;
-        Log.Info("Prevented the round Golem's vanilla 3,000-pixel target-distance despawn.");
-    }
-
-    private bool IsManagedRoundGolem(NPC npc)
-    {
-        if (npc?.type != NPCID.Golem || npc.life <= 0)
-            return false;
-
-        if (Main.netMode != NetmodeID.MultiplayerClient)
-            return IsOwnedBoss(npc);
-
-        // bossIndex is server-owned. Clients identify the synchronized round body
-        // by the active preset and its contained position so they suppress the
-        // same vanilla deactivation locally instead of flickering between syncs.
-        RoundManager manager = ModContent.GetInstance<RoundManager>();
-        ArenaLayout layout = manager.CurrentLayout;
-        if (manager.CurrentPhase != RoundManager.RoundPhase.Playing
-            || manager.SelectedBossType != NPCID.Golem || layout == null)
-            return false;
-
-        Rectangle bounds = layout.BossBounds;
-        Rectangle worldBounds = new(bounds.X * 16, bounds.Y * 16,
-            bounds.Width * 16, bounds.Height * 16);
-        return worldBounds.Intersects(npc.Hitbox);
     }
 
     private void ContainBoss(NPC boss)
