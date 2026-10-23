@@ -16,13 +16,11 @@ Round: {
 	PreparationFailedStatus: Arena setup failed
 	PreparationFailed: Arena setup failed. Waiting for an administrator.
 	PreparationFailedAdmin: Arena setup failed: {0} The selected arena has been kept. Fix the issue, then use Start round in Game Manager to retry, or Start voting to choose again.
-	VotingStatus: "Voting · {0}"
-	NextArenaStatus: "Next arena · {0}"
+	VotingStatus: Voting · {0}
+	NextArenaStatus: Next arena · {0}
 }
 
-EndScreen: {
-	BossDamage: "Boss damage: {0}"
-}
+EndScreen.BossDamage: Boss damage: {0}
 
 Configs: {
 	ServerConfig: {
