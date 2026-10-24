@@ -81,7 +81,7 @@ internal sealed class ScorelineUISystem : ModSystem
 
     internal static void DrawTimerDecoration(RoundManager manager, Rectangle panel, float alpha)
     {
-        if (manager.CurrentPhase == RoundManager.RoundPhase.Playing)
+        if (manager.CurrentPhase is RoundManager.RoundPhase.Playing or RoundManager.RoundPhase.FreezeCountdown)
         {
             const int iconSize = 38;
             Rectangle icon = new(panel.Center.X - iconSize / 2, panel.Center.Y - iconSize / 2, iconSize, iconSize);

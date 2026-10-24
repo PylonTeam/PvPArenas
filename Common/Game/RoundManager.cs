@@ -80,30 +80,34 @@ internal sealed class RoundManager : GameEvent
     private bool ChooseTeam => CurrentPhase == RoundPhase.VotingOrEndScreen
         && (Team)Main.LocalPlayer.team is not (Team.Red or Team.Blue);
     public override int TimerSidePadding => ChooseTeam ? 56 : 16;
+    public override bool ShowWaitingTimerText => true;
     public override bool ShowCountdownTimerText => CurrentPhase == RoundPhase.FreezeCountdown;
     internal string LoadoutArenaName => TryGetSelectedPreset(out BossFightPreset preset)
         ? preset.IsSandbox() ? Language.GetTextValue("Mods.PvPArenas.LoadoutSelector.Sandbox")
             : Lang.GetNPCNameValue(preset.Boss?.Type ?? NPCID.None)
         : DisplayName;
+    private int PlannedRoundDurationTicks => SecondsToTicks(
+        Math.Max(1, ModContent.GetInstance<ServerConfig>().RoundDurationSeconds));
     public override string TimerTooltip => string.IsNullOrEmpty(PreparationFailure)
-        ? "Arenas round status" : Language.GetTextValue(
+        ? Language.GetTextValue("Mods.PvPArenas.Round.StatusTooltip") : Language.GetTextValue(
             ErkySSCCompat.IsAdmin(Main.myPlayer, out _)
                 ? "Mods.PvPArenas.Round.PreparationFailedAdmin"
                 : "Mods.PvPArenas.Round.PreparationFailed", PreparationFailure);
     public override void DrawTimerDecoration(Rectangle panel, float opacity) => ScorelineUISystem.DrawTimerDecoration(this, panel, opacity);
-    public override string TimerText => !IsActive ? null : ChooseTeam ? "Choose your team" : CurrentPhase switch
+    public override string TimerText => !IsActive ? null : ChooseTeam
+        ? Language.GetTextValue("Mods.PvPArenas.Round.ChooseTeamStatus") : CurrentPhase switch
     {
         RoundPhase.WaitingForPlayers when !string.IsNullOrEmpty(PreparationFailure)
             => Language.GetTextValue("Mods.PvPArenas.Round.PreparationFailedStatus"),
-        RoundPhase.WaitingForPlayers => IsIdleHeld ? "Waiting" : "Waiting for players",
-        RoundPhase.VotingOrEndScreen when IsShowingResults => $"Results {GameTimerUISystem.FormatTime(RemainingTicks)}",
+        RoundPhase.WaitingForPlayers => Language.GetTextValue(IsIdleHeld
+            ? "Mods.PvPArenas.Round.WaitingToStartStatus" : "Mods.PvPArenas.Round.WaitingForPlayersStatus"),
+        RoundPhase.VotingOrEndScreen when IsShowingResults => Language.GetTextValue(
+            "Mods.PvPArenas.Round.ResultsStatus", GameTimerUISystem.FormatTime(RemainingTicks)),
         RoundPhase.VotingOrEndScreen when IsVoting => Language.GetTextValue(
             "Mods.PvPArenas.Round.VotingStatus", GameTimerUISystem.FormatTime(RemainingTicks)),
-        RoundPhase.VotingOrEndScreen => Language.GetTextValue(
-            "Mods.PvPArenas.Round.NextArenaStatus", GameTimerUISystem.FormatTime(RemainingTicks)),
-        RoundPhase.Generating => SelectedBossType == NPCID.Plantera ? "Generating jungle"
-            : SelectedBossType == NPCID.CultistBoss ? "Generating dungeon" : "Preparing arena",
-        RoundPhase.FreezeCountdown => LoadoutArenaName,
+        RoundPhase.VotingOrEndScreen => Language.GetTextValue("Mods.PvPArenas.Round.NextArenaStatus"),
+        RoundPhase.Generating => Language.GetTextValue("Mods.PvPArenas.Round.PreparingArenaStatus"),
+        RoundPhase.FreezeCountdown => GameTimerUISystem.FormatTime(PlannedRoundDurationTicks),
         RoundPhase.Playing => GameTimerUISystem.FormatTime(RemainingTicks),
         _ => "Arenas"
     };
@@ -562,8 +566,7 @@ internal sealed class RoundManager : GameEvent
         }
 
         RoundStartUtc = System.DateTime.UtcNow;
-        int seconds = Math.Max(1, ModContent.GetInstance<ServerConfig>().RoundDurationSeconds);
-        SetPhase(RoundPhase.Playing, SecondsToTicks(seconds));
+        SetPhase(RoundPhase.Playing, PlannedRoundDurationTicks);
     }
 
     private void FinishRound(RoundEndReason reason, Team winningTeam = Team.None, int winningPlayer = -1)
